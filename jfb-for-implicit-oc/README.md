@@ -252,3 +252,16 @@ python examples/explicit_ustar/plot_liquidation_jfb.py \
   --t-final 10.0 --nt 100 \
   --tag JFB-old-solver-regime
 ```
+
+
+ESSAIE CA FRANCOIS 
+
+python examples/explicit_ustar/plot_liquidation_jfb.py \
+    --n-assets 1 --t-final 1.0 --nt 50 \
+    --sigma 0.01414 --kappa 1e-5 --eta 0.5 \
+    --gamma 2.0 --epsilon 1e-2 --alpha 49.0 \
+    --q0-min 0.95 --q0-max 1.05 --S0 1.0 --X0 0.0 \
+    --train-epochs 500 --batch-size 256 --lr 1e-3 \
+    --fp-max-iters 50 --fp-tol 1e-6 \
+    --phi-arch default \
+    --seed 42 --tag FRANCOIS-REMPLACE-CA --no-aa --fp-alpha 0.9

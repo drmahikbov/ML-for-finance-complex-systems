@@ -191,6 +191,84 @@ class Phi(PNet):
         symA = torch.matmul(torch.t(self.A), self.A) # A'A
         return self.w( self.N(x)) + 0.5 * torch.sum( torch.matmul(x , symA) * x , dim=1, keepdims=True) + self.c(x)
 
+
+class TerminalAnchoredPhi(PNet):
+    """Value-function network with hard-anchored terminal condition.
+
+    Implements ``phi_theta(t, z) = G(z) + (T - t) * N_theta(t, z)`` where
+    ``N_theta`` is an arbitrary :class:`PNet` backbone and ``G`` is the
+    problem's terminal cost.  By construction ``phi_theta(T, z) = G(z)``
+    exactly for any backbone weights, so the terminal HJB / costate
+    boundary condition is satisfied at architecture level rather than via
+    a soft penalty.
+
+    Works with any :class:`ImplicitOC` subclass that exposes
+    ``compute_G`` and ``compute_grad_G_z`` (i.e. all of them).
+
+    Shape contract matches :class:`Phi`:
+      - ``getPhi(t, z) -> (batch, 1)``
+      - ``forward(t, z, full_grad=False) -> (batch, state_dim)``
+      - ``forward(t, z, full_grad=True)  -> (batch, state_dim + 1)``
+        with the trailing column equal to ``d phi / dt``.
+    """
+
+    def __init__(self, backbone: PNet, prob, dev: str = "cpu"):
+        super().__init__(prob.state_dim, dev)
+        if backbone.d != prob.state_dim:
+            raise ValueError(
+                f"TerminalAnchoredPhi: backbone.d={backbone.d} must match "
+                f"prob.state_dim={prob.state_dim}."
+            )
+        self.backbone = backbone
+        self.prob = prob
+        self.T = float(prob.t_final)
+
+    @staticmethod
+    def _t_scalar(t):
+        if isinstance(t, torch.Tensor):
+            return float(t.detach().reshape(-1)[0].item())
+        return float(t)
+
+    def getPhi(self, t, z):
+        if z.dim() == 1:
+            z = z.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
+
+        tau = self.T - self._t_scalar(t)
+        G = self.prob.compute_G(z)
+        if G.dim() == 1:
+            G = G.unsqueeze(-1)
+        N = self.backbone.getPhi(t, z)
+        out = G + tau * N
+        return out[0] if squeeze else out
+
+    def forward(self, t, z, full_grad=False):
+        if z.dim() == 1:
+            z = z.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
+
+        tau = self.T - self._t_scalar(t)
+        gradG = self.prob.compute_grad_G_z(z)  # (B, state_dim)
+
+        if not full_grad:
+            gradN_z = self.backbone(t, z, full_grad=False)  # (B, state_dim)
+            out = gradG + tau * gradN_z
+            return out[0] if squeeze else out
+
+        full = self.backbone(t, z, full_grad=True)  # (B, state_dim + 1)
+        gradN_z = full[:, : self.d]
+        gradN_t = full[:, self.d : self.d + 1]
+        N = self.backbone.getPhi(t, z)              # (B, 1)
+        grad_z = gradG + tau * gradN_z
+        grad_t = -N + tau * gradN_t                 # (B, 1)
+        out = torch.cat((grad_z, grad_t), dim=1)
+        return out[0] if squeeze else out
+
+
 class ImplicitNetOC(nn.Module, ABC):
     """
     Abstract base class for implicit neural networks.

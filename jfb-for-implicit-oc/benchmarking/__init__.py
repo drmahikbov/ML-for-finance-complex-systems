@@ -18,13 +18,16 @@ from .trajectory import Trajectory
 from .solvers import (
     ReferenceSolver,
     AlmgrenChrissBVPSolver,
+    AlmgrenChrissClosedForm,
     JFBPolicyRollout,
 )
+from .policies import LearnedCostatePolicy
 from .plotter import (
     Panel,
     BenchmarkPlotter,
     almgren_chriss_panels,
     liquidation_panels,
+    bicycle_panels,
 )
 from . import metrics
 from . import gradient_checks
@@ -33,17 +36,21 @@ from .diagnostics import (
     diagnostic_panels,
     attach_bvp_costate_to_meta,
     liquidation_costate_vs_bvp_panels,
+    liquidation_u_decomposition_panel,
 )
 
 __all__ = [
     "Trajectory",
     "ReferenceSolver",
     "AlmgrenChrissBVPSolver",
+    "AlmgrenChrissClosedForm",
     "JFBPolicyRollout",
+    "LearnedCostatePolicy",
     "BenchmarkPlotter",
     "Panel",
     "almgren_chriss_panels",
     "liquidation_panels",
+    "bicycle_panels",
     "benchmark_png_dir",
     "benchmark_png_path",
     "metrics",
@@ -52,4 +59,5 @@ __all__ = [
     "diagnostic_panels",
     "attach_bvp_costate_to_meta",
     "liquidation_costate_vs_bvp_panels",
+    "liquidation_u_decomposition_panel",
 ]

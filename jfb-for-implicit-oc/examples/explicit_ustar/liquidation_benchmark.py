@@ -19,19 +19,37 @@ New code should prefer the explicit API::
 
 CLOSED-FORM SOLUTION (γ=2 case)
 ---------------------------------
-With γ=2 the smoothed impact term η(u²+ε)^(γ/2) = η(u²+ε) has a constant
-second derivative in u, making ∂H/∂u=0 linear in u.
+After the cash-out-of-state refactor the OC state is ``z = [q, S]`` (no
+``X``) and the running cost absorbs the cash-flow / impact terms:
 
-Hamiltonian (framework sign: H = L + p^T f):
-    H = ½σ²q² + p_q(-u) + p_S(-κu) + p_X(Su - η(u²+ε))
+    L'(t, z, u) = ½σ²q² - S·u + η(u²+ε)            (γ=2 ⇒ const Hessian 2η in u)
+    f'(t, z, u) = (-u, -κu)                          (linear, z-independent)
+    G'(z(T))    = α q(T)²
 
-Terminal condition ∂G/∂z → p_q(T)=2αq(T), p_S(T)=0, p_X(T)=−1.
-Since ṗ_X = −∂H/∂X = 0, we have p_X(t) ≡ −1 for all t, giving:
+The legacy 3-state cost ``J_B = -X(T) + α q(T)² + ∫ ½σ²q² dt`` decomposes
+exactly as ``J_B = -X(0) + J_B'`` (the constant ``-X(0)`` is independent
+of policy), so ``argmin J_B = argmin J_B'``.
 
-    u*(t) = (-p_q - κp_S - S) / (2η)         [γ=2 closed form]
+Hamiltonian ``H' = L' + p^T f'`` (framework sign):
 
-See :class:`benchmarking.solvers.AlmgrenChrissBVPSolver` for the actual
-solver implementation.
+    H' = ½σ²q² - S u + η(u²+ε) + p_q(-u) + p_S(-κu)
+
+Stationarity ``∂H'/∂u = 0`` is linear in ``u`` — no division by ``p_X``,
+no ``p_X = -1`` substitution — and gives the canonical closed form:
+
+    u*(t) = (S + p_q + κ p_S) / (2η)               [γ=2 closed form, reduced]
+
+The reference single-asset solvers
+:class:`benchmarking.solvers.AlmgrenChrissBVPSolver` and
+:class:`benchmarking.solvers.AlmgrenChrissClosedForm` continue to work
+on the original 3-state ``[q, S, X]`` BVP (the math is independent of
+the OC state layout). Callers wiring them to the new 2-component
+``z0_batch`` from ``LiquidationPortfolioOC.sample_initial_condition``
+must explicitly append ``X0 = 0.0`` to each row first; this facade
+already does so via ``np.array([q0, S0, 0.0])``. The JFB rollout
+``Trajectory.z`` likewise carries an observer cash column at index
+``2 * n_assets``, so the panel slicing ``tr.z[:, 0/1/2]`` keeps working
+unchanged.
 
 PNG output directory
 --------------------
@@ -57,11 +75,13 @@ import matplotlib.pyplot as plt
 from benchmarking import (
     Trajectory,
     AlmgrenChrissBVPSolver,
+    AlmgrenChrissClosedForm,
     JFBPolicyRollout,
     BenchmarkPlotter,
     Panel,
     almgren_chriss_panels,
 )
+from benchmarking.solvers import ReferenceSolver
 from benchmarking import paths as _paths
 from benchmarking import gradient_checks as _gradient_checks
 from benchmarking.plotter import (
@@ -129,10 +149,39 @@ class LiquidationBenchmark:
     )
     _LW = 2.0
 
-    def __init__(self, prob: Any, n_bvp_nodes: int = 500, bvp_tol: float = 1e-9):
+    def __init__(
+        self,
+        prob: Any,
+        n_bvp_nodes: int = 500,
+        bvp_tol: float = 1e-9,
+        solver_kind: str = "closed_form",
+    ):
+        """Build the legacy benchmark facade.
+
+        Parameters
+        ----------
+        prob
+            ``LiquidationPortfolioOC`` (or any single-asset prob exposing
+            the same scalar attributes).
+        n_bvp_nodes, bvp_tol
+            Forwarded to :class:`AlmgrenChrissBVPSolver` when
+            ``solver_kind='bvp'``.  Ignored for the closed-form solver.
+        solver_kind
+            Which γ=2 reference to build under :attr:`_bvp_solver` (name
+            kept for backwards-compatibility, but the slot may now hold
+            either solver):
+
+            * ``"closed_form"`` (default) — :class:`AlmgrenChrissClosedForm`,
+              evaluates the analytical PMP solution directly.  Faster and
+              free of BVP collocation residuals.
+            * ``"bvp"`` — :class:`AlmgrenChrissBVPSolver`, the original
+              :func:`scipy.integrate.solve_bvp` reference.  Useful as a
+              cross-check.
+        """
         self.prob = prob
         self.n_bvp_nodes = n_bvp_nodes
         self.bvp_tol = bvp_tol
+        self.solver_kind = solver_kind
 
         # ``prob.{sigma,kappa,eta}`` are length-n_assets tensors after the
         # multi-asset refactor; ``LiquidationBenchmark`` is single-asset
@@ -147,11 +196,21 @@ class LiquidationBenchmark:
         self.t0 = prob.t_initial
 
         self._gamma2_available = abs(self.gamma - 2.0) < 1e-6
-        self._bvp_solver: Optional[AlmgrenChrissBVPSolver] = None
+        # Attribute name kept for backwards-compatibility; in CF mode the
+        # slot holds an :class:`AlmgrenChrissClosedForm` instead.
+        self._bvp_solver: Optional[ReferenceSolver] = None
         if self._gamma2_available:
-            self._bvp_solver = AlmgrenChrissBVPSolver(
-                prob, n_bvp_nodes=n_bvp_nodes, bvp_tol=bvp_tol,
-            )
+            if solver_kind == "closed_form":
+                self._bvp_solver = AlmgrenChrissClosedForm(prob)
+            elif solver_kind == "bvp":
+                self._bvp_solver = AlmgrenChrissBVPSolver(
+                    prob, n_bvp_nodes=n_bvp_nodes, bvp_tol=bvp_tol,
+                )
+            else:
+                raise ValueError(
+                    f"Unknown solver_kind={solver_kind!r}; "
+                    f"expected 'closed_form' or 'bvp'."
+                )
 
     # ------------------------------------------------------------------
     # solve_exact -- legacy tuple return
@@ -175,18 +234,25 @@ class LiquidationBenchmark:
         traj = self._bvp_solver.solve(np.array([q0, S0, 0.0]))
         t_arr = traj.t
         traj_mat = traj.z.T  # (3, N)
-        # Legacy u_arr is the BVP-grid u* evaluated on *every* node (N values).
+        # Legacy u_arr is the exact-grid u* evaluated on *every* node (N values).
         # Reconstruct the right endpoint by extending with the final optimal control.
         u_left = traj.u[:, 0]
-        u_right = u_left[-1:] if u_left.size else u_left
-        # We recompute u*(T) from the raw BVP output for parity with the
-        # legacy implementation which returned N values (not N-1).
-        u_final = self._bvp_solver._u_star(
-            traj.z[-1, 0], traj.z[-1, 1],
-            # Reconstruct p_q(T) and p_S(T) from boundary conditions:
-            2.0 * self.alpha * traj.z[-1, 0],
-            0.0,
-        )
+        if isinstance(self._bvp_solver, AlmgrenChrissBVPSolver):
+            # Preserve legacy BVP-specific path: recompute u*(T) from
+            # the right-endpoint costates so the returned array exactly
+            # matches the pre-refactor BVP-only implementation.
+            u_final = self._bvp_solver._u_star(
+                traj.z[-1, 0], traj.z[-1, 1],
+                # Reconstruct p_q(T) and p_S(T) from boundary conditions:
+                2.0 * self.alpha * traj.z[-1, 0],
+                0.0,
+            )
+        else:
+            # Universal PMP terminal stationarity for γ=2 with p_X=-1,
+            # p_S(T)=0, p_q(T)=2α q(T):  2η u(T) = S(T) + 2α q(T).
+            u_final = (
+                traj.z[-1, 1] + 2.0 * self.alpha * traj.z[-1, 0]
+            ) / (2.0 * self.eta)
         u_arr = np.concatenate([u_left, np.array([u_final])])
         return t_arr, traj_mat, u_arr
 
@@ -253,9 +319,15 @@ class LiquidationBenchmark:
         lw = self._LW
         alpha_line = 0.75
 
-        for label, color, trajs in rollouts:
+        for s, (label, color, trajs) in enumerate(rollouts):
+            # The first policy (red "JFB (analytic)") is drawn first and
+            # gets covered by every subsequent overlay (e.g. green
+            # "u*(p_θ)"), which produces an *identical* trajectory under
+            # the Newton fixed-point step. Widen it so a red halo remains
+            # visible at the edges of the overpainted green line.
+            series_lw = lw + 2.0 if s == 0 else lw
             for b in range(batch):
-                kw = dict(color=color, lw=lw, alpha=alpha_line,
+                kw = dict(color=color, lw=series_lw, alpha=alpha_line,
                           label=label if b == 0 else None)
                 tr = trajs[b]
                 axs[0][0].plot(t_jfb, tr.z[:, 0], **kw)
@@ -532,8 +604,9 @@ if __name__ == "__main__":
     print("── LiquidationBenchmark smoke test ──")
     prob = LiquidationPortfolioOC(
         batch_size=10, t_initial=0.0, t_final=2.0, nt=100,
+        n_assets=1,
         sigma=0.02, kappa=1e-4, eta=0.1, gamma=2.0,
-        epsilon=1e-2, alpha=30, q0_min=0.5, q0_max=1.5,
+        epsilon=1e-2, alpha=30, q0_min=0.5, q0_max=1.5, S0=1.0,
     )
     bench = LiquidationBenchmark(prob)
 

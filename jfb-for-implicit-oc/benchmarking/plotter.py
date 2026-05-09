@@ -306,6 +306,86 @@ def almgren_chriss_panels() -> List[Panel]:
     ]
 
 
+def _bicycle_position_extractor(agent_idx: int, single_state_dim: int = 4) -> ExtractFn:
+    """Parametric (x, y) extractor for one bicycle agent.
+
+    Returns the agent's planar trajectory as ``(x_arr, y_arr)`` so that
+    :class:`BenchmarkPlotter` renders it as ``ax.plot(x, y, ...)`` rather
+    than versus time. Stochastic shapes are mean-reduced across paths
+    (single deterministic rollouts pass through unchanged).
+    """
+    def _extract(traj: Trajectory) -> Tuple[np.ndarray, np.ndarray]:
+        s = agent_idx * single_state_dim
+        x = np.asarray(traj.z[..., s])
+        y = np.asarray(traj.z[..., s + 1])
+        if x.ndim == 2:
+            x = x.mean(axis=0)
+            y = y.mean(axis=0)
+        return x, y
+    return _extract
+
+
+def bicycle_panels(num_agents: int = 1) -> List[Panel]:
+    """Per-agent layout for :class:`models.MultiBicycle.MultiBicycleOC`.
+
+    State layout (per agent, ``single_state_dim=4``):
+        ``[x, y, theta, v]``
+    Control layout (per agent, ``single_control_dim=2``):
+        ``[delta, a]``
+
+    Per agent we expose five panels:
+
+        1. Parametric position trajectory ``(x_i, y_i)``  -- not vs time,
+           the abscissa is ``x``.
+        2. Heading  ``theta_i(t)``
+        3. Speed    ``v_i(t)``
+        4. Steering ``delta_i(t)``  (control)
+        5. Acceleration ``a_i(t)``  (control)
+
+    For ``num_agents > 1`` the same five-panel set is repeated per agent.
+    Use ``ncols=5`` to get one row per agent in the resulting grid; use
+    ``ncols=3`` (the plotter's default) for a denser layout.
+    """
+    if num_agents <= 0:
+        raise ValueError(f"num_agents must be positive, got {num_agents}")
+
+    SD = 4  # single_state_dim
+    CD = 2  # single_control_dim
+
+    panels: List[Panel] = []
+    for i in range(num_agents):
+        suffix = f"_{i + 1}" if num_agents > 1 else ""
+        s = i * SD
+        c = i * CD
+        panels.append(Panel(
+            f"Position  (x{suffix}, y{suffix})",
+            _bicycle_position_extractor(i, SD),
+            ylabel=f"y{suffix}",
+            xlabel=f"x{suffix}",
+        ))
+        panels.append(Panel(
+            f"Heading  θ{suffix}(t)",
+            _state_extractor(s + 2),
+            ylabel=f"θ{suffix}",
+        ))
+        panels.append(Panel(
+            f"Speed  v{suffix}(t)",
+            _state_extractor(s + 3),
+            ylabel=f"v{suffix}",
+        ))
+        panels.append(Panel(
+            f"Steering  δ{suffix}(t)",
+            _control_extractor(c),
+            ylabel=f"δ{suffix}(t)",
+        ))
+        panels.append(Panel(
+            f"Acceleration  a{suffix}(t)",
+            _control_extractor(c + 1),
+            ylabel=f"a{suffix}(t)",
+        ))
+    return panels
+
+
 def liquidation_panels(n_assets: int) -> List[Panel]:
     """Multi-asset Almgren-Chriss liquidation panel layout.
 

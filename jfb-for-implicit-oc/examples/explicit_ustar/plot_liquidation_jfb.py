@@ -21,6 +21,26 @@ then saves a six-panel figure (JFB vs exact BVP when ``γ=2``) via
 You must use the **same** ``LiquidationPortfolioOC`` hyperparameters as training
 when loading a checkpoint (defaults below match ``liquidation_benchmark`` smoke
 settings so the exact reference lines up).
+
+Reduced-state note (post X-out-of-state refactor)
+-------------------------------------------------
+``LiquidationPortfolioOC`` now has ``state_dim = 2 * n_assets`` (no cash
+``X`` in the OC state). The closed-form optimum is
+
+    u* = (S + p_q + κ p_S) / (2 η)
+
+with **no** ``p_X`` term, so the legacy ``--learned-costate-overlay``
+``learned`` / ``pinned`` / ``both`` distinction has collapsed to
+``on`` / ``off``. Cash ``X(t)`` is integrated as a parallel observer
+inside :class:`benchmarking.solvers.JFBPolicyRollout` and packed at
+``Trajectory.z[:, 2*n_assets]`` so the existing six-panel layout keeps
+displaying ``q, u, S, X`` unchanged.
+
+Inner FP step ``--fp-alpha`` defaults to ``auto``: for ``γ=2`` liquidation
+this resolves to ``1/(η_max + η_min)`` (same minimax rule as
+``example_liquidationportfolio.py``), i.e. ``1/(2η)`` when all ``η`` match,
+for fast inner fixed-point convergence. Pass a numeric ``--fp-alpha`` to
+override.
 """
 
 from __future__ import annotations
@@ -28,6 +48,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from typing import Any
 
 import numpy as np
 import torch
@@ -56,12 +77,14 @@ from core.paths import results_dir
 from benchmarking import (
     BenchmarkPlotter,
     JFBPolicyRollout,
+    LearnedCostatePolicy,
     diagnostic_rollout,
     diagnostic_panels,
     attach_bvp_costate_to_meta,
     liquidation_costate_vs_bvp_panels,
     liquidation_panels,
 )
+from benchmarking.diagnostics import liquidation_u_decomposition_panel
 from benchmarking.solvers import AlmgrenChrissBVPSolver
 
 
@@ -106,10 +129,16 @@ def parse_args() -> argparse.Namespace:
     # Inner fixed-point solver knobs (ImplicitNetOC).                    #
     # ------------------------------------------------------------------ #
     p.add_argument(
-        "--fp-alpha", type=float, default=1.0,
-        help="Inner fixed-point step size (gradient descent on H). Newton "
-             "step for liquidation γ=2 is 1/(2η). Default 1.0 is robust "
-             "with Anderson acceleration; drop to 1e-2 if AA is off.",
+        "--fp-alpha",
+        type=_parse_fp_alpha_cli,
+        default="auto",
+        help="Inner fixed-point step α on ∇_u H. Default 'auto' uses the "
+             "minimax-optimal scalar 1/(η_max+η_min) for reduced liquidation "
+             "at γ=2 (same as example_liquidationportfolio.py) — collapses "
+             "to 1/(2η) when all η match, giving fast / one-shot inner FP. "
+             "Pass a positive float to override. With Anderson on, large α "
+             "is still often fine; with --no-aa, avoid α ≫ 1/(2η_min) without "
+             "reason.",
     )
     p.add_argument(
         "--fp-max-iters", type=int, default=50,
@@ -177,6 +206,32 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--u-max", type=float, default=1.0e6,
                    help="Upper bound when --clamp-u is set (default effectively +inf).")
     # ------------------------------------------------------------------ #
+    # phi(t, z) architecture selector.                                   #
+    #   default  -> generic Phi(3, 50, state_dim) (legacy behaviour).    #
+    #   anchored -> prob.make_p_net(): a TerminalAnchoredPhi wrapping    #
+    #               the same generic Phi backbone, hard-anchoring        #
+    #               phi(T, z) = G(z) by architecture.                    #
+    # ------------------------------------------------------------------ #
+    p.add_argument("--phi-arch", type=str, default="anchored",
+                   choices=["default", "anchored"],
+                   help="Value-function network: 'default' = generic Phi, "
+                        "'anchored' = TerminalAnchoredPhi enforcing "
+                        "phi(T, z) = G(z) by construction (default).")
+    # ------------------------------------------------------------------ #
+    # Learned-costate diagnostic overlay (the green "JFB u*(p_θ)" curve). #
+    # Modes:                                                              #
+    #   off -> do NOT add the overlay at all (cleanest plot).             #
+    #   on  -> evaluate u*(p_θ) along the JFB rollout. In the reduced     #
+    #          formulation the costate has shape (B, 2n) and the formula  #
+    #          u* = (S + p_q + κ p_S) / (2η) does NOT divide by p_X       #
+    #          (no p_X exists), so the legacy 'pinned' fail-safe is gone. #
+    # ------------------------------------------------------------------ #
+    p.add_argument("--learned-costate-overlay", type=str, default="on",
+                   choices=["off", "on"],
+                   help="Closed-form u*(p_theta) overlay on the JFB-vs-BVP "
+                        "figure. 'off' disables it. Has no effect for "
+                        "problems without a closed-form u*.")
+    # ------------------------------------------------------------------ #
     # Optimality-condition loss weights (pass-through to ImplicitOC).    #
     # alphaHJB = [running, terminal]   penalty on the HJB residual.      #
     # alphaadj = [running, terminal]   penalty on the adjoint residual.  #
@@ -191,6 +246,12 @@ def parse_args() -> argparse.Namespace:
                    help="Running-time adjoint residual weight (default 0).")
     p.add_argument("--alpha-adj-fin", type=float, default=0.0,
                    help="Terminal adjoint residual weight (default 0).")
+    p.add_argument("--verify", action="store_true",
+                   help="Enable per-epoch numerical verification (computes "
+                        "max_grad_T_u, M_theta singular values, optimality "
+                        "residuals, etc. and writes them to the history CSV). "
+                        "Significantly slower per epoch; intended for "
+                        "diagnostic runs, not full training.")
     # ------------------------------------------------------------------ #
     # Problem parameters (must match training when using --checkpoint).  #
     # Per-asset arrays accept ``nargs='+'``: pass a single value to       #
@@ -213,12 +274,79 @@ def parse_args() -> argparse.Namespace:
                    help="η (nonlinear impact / friction) per asset.")
     p.add_argument("--gamma", type=float, default=2.0)
     p.add_argument("--epsilon", type=float, default=1e-2)
-    p.add_argument("--alpha", type=float, default=30.0)
+    p.add_argument("--alpha", type=float, default=3.0)
     p.add_argument("--q0-min", type=float, nargs="+", default=[0.5])
     p.add_argument("--q0-max", type=float, nargs="+", default=[1.5])
     p.add_argument("--S0",     type=float, nargs="+", default=[1.0])
     p.add_argument("--X0",     type=float, default=0.0)
     return p.parse_args()
+
+
+def _parse_fp_alpha_cli(value: str) -> float | str:
+    """``argparse`` type for ``--fp-alpha``: positive float or the literal ``auto``."""
+    v = value.strip().lower()
+    if v == "auto":
+        return "auto"
+    try:
+        x = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"--fp-alpha must be a positive float or 'auto', got {value!r}"
+        ) from exc
+    if x <= 0.0:
+        raise argparse.ArgumentTypeError(f"--fp-alpha must be positive, got {x}")
+    return x
+
+
+def resolve_liquidation_fp_alpha(prob: Any, fp_alpha: float | str) -> float:
+    """Scalar inner fixed-point step for :class:`ImplicitNetOC`.
+
+    When ``fp_alpha == \"auto\"`` and the problem is the reduced
+    liquidation model at ``γ = 2`` (constant per-asset Hessian ``2η`` in
+    ``u``), use the same minimax-optimal scalar as
+    ``example_liquidationportfolio.py``:
+
+        α_fp = 1 / (η_max + η_min)
+        worst contraction  max_i |1 − α_fp · 2 η_i|
+
+    For homogeneous ``η`` this is ``1/(2η)`` — one Newton step on ``H``,
+    typically much faster inner-FP convergence than a generic ``α = 1``
+    with Anderson off. For other problems or ``γ ≠ 2``, ``auto`` falls
+    back to ``1.0`` with a one-line ``[info]`` print.
+    """
+    if isinstance(fp_alpha, str) and fp_alpha.strip().lower() == "auto":
+        if not getattr(prob, "has_closed_form_u_star", lambda: False)():
+            print(
+                "[info] --fp-alpha auto: no closed-form u*; using alpha_fp=1.0"
+            )
+            return 1.0
+        if abs(float(prob.gamma) - 2.0) >= 1e-6:
+            print(
+                f"[info] --fp-alpha auto: gamma={float(prob.gamma):g} != 2; "
+                "using alpha_fp=1.0"
+            )
+            return 1.0
+        eta = prob.eta
+        if not hasattr(eta, "max"):
+            print("[info] --fp-alpha auto: missing prob.eta; using alpha_fp=1.0")
+            return 1.0
+        eta_max = float(eta.max().item())
+        eta_min = float(eta.min().item())
+        if eta_max <= 0.0 or eta_min <= 0.0:
+            print(
+                "[warn] --fp-alpha auto: non-positive eta; using alpha_fp=1.0"
+            )
+            return 1.0
+        alpha_fp = 1.0 / (eta_max + eta_min)
+        contraction = float(torch.abs(1.0 - alpha_fp * 2.0 * eta).max().item())
+        print(
+            "FP step (--fp-alpha auto): "
+            f"alpha_fp = 1/(eta_max + eta_min) = {alpha_fp:.4g}  "
+            f"worst |1 − alpha_fp·2η| = {contraction:.3e}  "
+            "(0 ⇒ one-shot exact when all η are equal; <1 ⇒ strict contraction)"
+        )
+        return alpha_fp
+    return float(fp_alpha)
 
 
 def _broadcast(values: list[float], n_assets: int, name: str) -> list[float]:
@@ -277,8 +405,16 @@ def build_policy(prob: LiquidationPortfolioOC, device: str,
                  aa_beta: float = 0.5,
                  clamp_u: bool = False,
                  u_min: float = -1.0e6,
-                 u_max: float = 1.0e6) -> ImplicitNetOC:
-    phi = Phi(3, 50, prob.state_dim, dev=device)
+                 u_max: float = 1.0e6,
+                 phi_arch: str = "anchored") -> ImplicitNetOC:
+    if phi_arch == "anchored":
+        phi = prob.make_p_net(hidden_dim=50, n_resnet_layers=3, device=device)
+    elif phi_arch == "default":
+        phi = Phi(3, 50, prob.state_dim, dev=device)
+    else:
+        raise ValueError(
+            f"Unknown phi_arch={phi_arch!r}; expected 'default' or 'anchored'."
+        )
     return ImplicitNetOC(
         prob.state_dim,
         prob.control_dim,
@@ -329,6 +465,7 @@ def _train_or_load(
         clamp_u=args.clamp_u,
         u_min=args.u_min,
         u_max=args.u_max,
+        phi_arch=args.phi_arch,
     )
 
     if args.checkpoint:
@@ -362,6 +499,7 @@ def _train_or_load(
     )
     trainer = OptimalControlTrainer(
         inn, prob, opt, scheduler=sched, device=device, tag=trainer_tag,
+        ver=args.verify,
     )
     trainer.set_mode("standard")
     print(
@@ -387,7 +525,7 @@ def _train_or_load(
 
 def _plot_multiasset_rollout(
     prob: LiquidationPortfolioOC,
-    policies: dict[str, ImplicitNetOC],
+    policies: dict[str, Any],
     z0_batch: torch.Tensor,
     save_path: str,
     n_show: int,
@@ -468,6 +606,17 @@ def _write_diagnostics(
     n_assets = int(getattr(prob, "n_assets", 1))
     state_components = (0, 1) if n_assets >= 2 else (0, 1)
     diag_panels = diagnostic_panels(state_components=state_components) + extra_panels
+    # Closed-form u*(p_θ) along the JFB rollout: gap to the trajectory's
+    # own u(t) isolates the inner-FP convergence error (no re-rollout).
+    # In the reduced formulation u* = (S + p_q + κ p_S) / (2η) — no
+    # division by p_X, no pinning needed.
+    if prob.has_closed_form_u_star() and args.learned_costate_overlay == "on":
+        try:
+            diag_panels = diag_panels + [
+                liquidation_u_decomposition_panel(prob)
+            ]
+        except Exception as exc:
+            print(f"  [warn] u*(p_θ) decomposition panel skipped: {exc}")
     diag_out = os.path.join(
         results_dir(type(prob).__name__, "benchmark"),
         out_filename,
@@ -475,7 +624,7 @@ def _write_diagnostics(
     BenchmarkPlotter(diag_panels, ncols=2).plot(
         [traj_for_plot], save_path=diag_out,
         title=(
-            f"{label} diagnostics — α_fp={args.fp_alpha:.2g}, "
+            f"{label} diagnostics — α_fp={args.fp_alpha:.6g}, "
             f"max_iters={args.fp_max_iters}, tol={args.fp_tol:.0e}, "
             f"AA={'on' if args.use_aa else 'off'}"
         ),
@@ -495,13 +644,14 @@ def main() -> None:
         print(f"Seeded torch and numpy with seed={args.seed}.")
 
     prob = build_problem(args, device)
+    args.fp_alpha = resolve_liquidation_fp_alpha(prob, args.fp_alpha)
     print(
         f"Problem: n_assets={prob.n_assets}, state_dim={prob.state_dim}, "
         f"control_dim={prob.control_dim}, gamma={prob.gamma:.3g}"
     )
     print(
         "Inner FP solver: "
-        f"alpha={args.fp_alpha:.3g}  max_iters={args.fp_max_iters}  "
+        f"alpha={args.fp_alpha:.6g}  max_iters={args.fp_max_iters}  "
         f"tol={args.fp_tol:.1e}  "
         + (f"Anderson(beta={args.aa_beta:.2f})" if args.use_aa else "no Anderson")
     )
@@ -554,9 +704,29 @@ def main() -> None:
         default_name,
     )
 
-    policies: dict[str, ImplicitNetOC] = {"JFB (analytic)": inn_jfb}
+    policies: dict[str, Any] = {"JFB (analytic)": inn_jfb}
+
+    def _add_learned_costate_overlays(label_prefix: str, p_net) -> None:
+        """Append a single LearnedCostatePolicy overlay when enabled.
+
+        Gated on ``prob.has_closed_form_u_star()`` so problems without a
+        closed-form argmin_u H silently no-op. Reduced LiquidationPortfolio
+        has no p_X to pin and no division by p_X in the closed form, so
+        the legacy ``learned`` / ``pinned`` / ``both`` distinction is
+        gone — only ``on`` / ``off``.
+        """
+        if not prob.has_closed_form_u_star():
+            return
+        if args.learned_costate_overlay == "off":
+            return
+        policies[f"{label_prefix}  u*(p_θ)"] = LearnedCostatePolicy(
+            p_net, prob,
+        )
+
+    _add_learned_costate_overlays("JFB", inn_jfb.p_net)
     if inn_ad is not None:
         policies["JFB (full AD)"] = inn_ad
+        _add_learned_costate_overlays("AD", inn_ad.p_net)
 
     if prob.n_assets == 1:
         # Single-asset: keep the legacy 6-panel BVP-vs-JFB comparison figure.

@@ -3,7 +3,7 @@ Multi-bicycle optimal control: train the JFB policy and let the trainer
 write every artifact to ``results/MultiBicycleOC/``.
 
 Mirrors the structure of ``example_liquidationportfolio.py``:
-
+arv
 1. instantiate :class:`MultiBicycleOC` with concrete parameters,
 2. wire up :class:`ImplicitNetOC_MB` + optimizer + scheduler,
 3. hand them to :class:`OptimalControlTrainer` with a ``tag``; the
@@ -124,7 +124,7 @@ def run_mb_jfb(
 
     trainer_std = OptimalControlTrainer(
         implicit_net, mb_std, optimizer_std,
-        scheduler=scheduler, device=device, tag=tag,
+        scheduler=scheduler, device=device, tag=tag,ver=True,
     )
     trainer_std.set_mode("standard")
 
@@ -208,7 +208,7 @@ def main():
         "pen_pos": True,
         "ic_var": 0.1,
     }
-    config_mb_train = {"lr": 5.0e-4, "epochs": 500}
+    config_mb_train = {"lr": 5.0e-4, "epochs": 150}
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if device == "cpu":

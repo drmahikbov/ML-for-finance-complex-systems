@@ -157,7 +157,63 @@ class ImplicitOC(ABC):
         """
         pass
 
-    
+    # ------------------------------------------------------------------
+    # Optional closed-form PMP optimum
+    # ------------------------------------------------------------------
+    # Problems whose Hamiltonian admits an explicit minimiser in u (e.g. the
+    # γ=2 Almgren-Chriss case where ∂_u H is linear in u) can opt in by
+    # overriding both methods below. Diagnostic adapters in
+    # ``benchmarking.policies`` consume this hook to evaluate u*(t, z)
+    # directly from the learned costate, bypassing the inner FP solver.
+    # The defaults keep every other problem class strictly opt-out so we
+    # don't have to touch them.
+    def has_closed_form_u_star(self) -> bool:
+        """Return ``True`` iff :meth:`optimal_u_from_costate` is implemented."""
+        return False
+
+    def optimal_u_from_costate(
+        self, t: TimeLike, z: torch.Tensor, p: torch.Tensor
+    ) -> torch.Tensor:
+        """Closed-form ``argmin_u H(t, z, u, p)`` when available.
+
+        Override only when the Hamiltonian admits an explicit minimiser.
+        Shape contract: ``z`` ``(batch, state_dim)``, ``p`` ``(batch, state_dim)``;
+        returns ``(batch, control_dim)``.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} has no closed-form u*; use the FP policy."
+        )
+
+    # ------------------------------------------------------------------
+    # Costate / value-function network factory
+    # ------------------------------------------------------------------
+    # Each problem can advertise the architecture best suited to its known
+    # value-function structure. The default returns a plain ``Phi`` so
+    # call-sites that have always built ``Phi(3, 50, state_dim)`` keep
+    # working untouched.  Subclasses override only when they want to inject
+    # an architectural prior (e.g. a terminal-anchored wrapper).
+    def make_p_net(
+        self,
+        hidden_dim: int = 50,
+        n_resnet_layers: int = 3,
+        device: "str | None" = None,
+    ):
+        """Construct the recommended costate / value-function network for this problem.
+
+        Default: a generic :class:`Phi` matching the historical
+        ``Phi(3, 50, state_dim)`` shape used across the examples. Override
+        in subclasses to return a problem-specific architecture (e.g.
+        :class:`TerminalAnchoredPhi` wrapping a backbone).
+        """
+        from ImplicitNets import Phi
+        return Phi(
+            n_resnet_layers,
+            hidden_dim,
+            self.state_dim,
+            dev=device or self.device,
+        )
+
+
     def compute_general_H(
         self, t: TimeLike, z: torch.Tensor, u: torch.Tensor, p: torch.Tensor
     ) -> torch.Tensor:
@@ -362,8 +418,12 @@ class ImplicitOC(ABC):
             diff_p = (z_temp[:,:2] - z_target_temp[:,:2]).view(batch_size,-1)
             G = 0.5*torch.norm(diff_p, dim=1)**2            
             cadjfin = cadjfin + torch.mean(gradPhi[:,:self.state_dim] - self.compute_grad_G_z(z) )
-            cHJBfin = torch.mean(torch.linalg.vector_norm(phi_t[:,:,i+1] - self.alphaG*temp_final_cost.view(-1, 1), ord=2, dim=1))
-        
+            # Terminal HJB residual is the boundary condition phi(T, z) = G(z).
+            # Multiplying G(z) by self.alphaG (the loss weight) is a bug: the
+            # residual is a property of the value function, not of the trainer's
+            # regularisation preference.
+            cHJBfin = torch.mean(torch.linalg.vector_norm(phi_t[:,:,i+1] - temp_final_cost.view(-1, 1), ord=2, dim=1))
+
         else:    
             if torch.is_tensor(u):
                 assert self.nt == u.shape[2]
@@ -422,8 +482,10 @@ class ImplicitOC(ABC):
 
                     if hasattr(u.p_net, "getPhi"):
                         #assert u.p_net.getPhi(ti,z).shape == temp_final_cost.view(-1, 1).shape
-                        cHJBfin = torch.mean(torch.linalg.vector_norm(u.p_net.getPhi(ti,z) - self.alphaG*temp_final_cost.view(-1, 1), ord=2, dim=1))
-        
+                        # Terminal HJB residual phi(T, z) - G(z); the loss weight
+                        # alphaG must NOT scale the comparator G(z).
+                        cHJBfin = torch.mean(torch.linalg.vector_norm(u.p_net.getPhi(ti,z) - temp_final_cost.view(-1, 1), ord=2, dim=1))
+
         # Calculate mean running cost
         running_cost = torch.mean(running_cost)
         
@@ -560,7 +622,9 @@ class ImplicitOC(ABC):
                     cadjfin = cadjfin + torch.mean(gradPhi[:,:self.state_dim] - self.compute_grad_G_z(z) )
 
                 if hasattr(u.p_net, "getPhi"):
-                    cHJBfin = torch.mean(torch.linalg.vector_norm(u.p_net.getPhi(ti,z) - self.alphaG*temp_final_cost.view(-1, 1),ord=2,dim=1))
+                    # Terminal HJB residual phi(T, z) - G(z); the loss weight
+                    # alphaG must NOT scale the comparator G(z).
+                    cHJBfin = torch.mean(torch.linalg.vector_norm(u.p_net.getPhi(ti,z) - temp_final_cost.view(-1, 1),ord=2,dim=1))
         
         # Calculate mean running cost
         running_cost = torch.mean(running_cost)

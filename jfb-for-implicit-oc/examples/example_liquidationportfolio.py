@@ -97,13 +97,39 @@ def run_liquidation_jfb(
     )
     lp.track_all_fp_iters = full_AD
 
+    # Reduced LiquidationPortfolioOC has ``∂²H'/∂u² = 2η`` (problem constant
+    # per asset). Per asset i the FP iteration ``u_i ← u_i − α (∂_u H')_i``
+    # has contraction factor ``|1 − α · 2 η_i|``. ImplicitNetOC uses a
+    # SCALAR α in the residual norm (cannot pass a per-asset α), so we
+    # pick the minimax-optimal scalar:
+    #
+    #     α_fp = 1 / (η_max + η_min)
+    #         ⇒ |1 − α 2 η_i| ∈ [|η_max − η_min| / (η_max + η_min)]  (worst case)
+    #
+    # For a homogeneous-η problem (η_max = η_min = η) this collapses to
+    # ``α_fp = 1/(2 η)`` — exactly the one-shot Newton step used by the
+    # reference jfb-new-copy AlmgrenChriss training loop. For
+    # heterogeneous η it is the smallest worst-case contraction factor
+    # achievable with a scalar step.
+    eta_max = float(lp.eta.max().item())
+    eta_min = float(lp.eta.min().item())
+    alpha_fp = 1.0 / (eta_max + eta_min)
+    contraction_worst = float(
+        torch.abs(1.0 - alpha_fp * 2.0 * lp.eta).max().item()
+    )
+    print(
+        f"FP step: alpha_fp = 1/(eta_max + eta_min) = {alpha_fp:.4g}  "
+        f"worst contraction factor = {contraction_worst:.3e}  "
+        f"(0 ⇒ one-shot exact, < 1 ⇒ strict contraction)"
+    )
+
     phi = Phi(3, 50, lp.state_dim, dev=device)
     inn = ImplicitNetOC(
         lp.state_dim, lp.control_dim,
-        # Anderson-accelerated FP solver: large step + small cap is fine
-        # because AA adapts; lower tol than the legacy 1e-4 means we
-        # actually converge to a real fixed point of T at inference.
-        alpha=0.01, max_iters=200, tol=1e-4,
+        # Minimax-optimal scalar Newton step on the constant Hessian 2η.
+        # One-shot exact for homogeneous-η problems, strict contraction
+        # for heterogeneous ones — no Anderson required either way.
+        alpha=alpha_fp, max_iters=50, tol=1e-6,
         use_aa=False, beta=0.0,
         p_net=phi, oc_problem=lp,
         u_min=0, u_max=10, use_control_limits=False,

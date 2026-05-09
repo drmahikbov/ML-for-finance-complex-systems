@@ -299,19 +299,29 @@ def attach_bvp_costate_to_meta(traj: Trajectory, prob: Any, z0: np.ndarray) -> T
     ``p_bvp`` (shape ``(N, 2)``) and ``t_bvp`` (shape ``(N,)``). Use the
     factory :func:`liquidation_costate_vs_bvp_panels` together with this
     augmentation.
+
+    Accepts ``z0`` in either the legacy 3-component layout
+    ``[q0, S0, X0]`` or the post-reduction 2-component layout
+    ``[q0, S0]`` — single-asset only either way. The 2-component case
+    is auto-padded with ``X0 = 0.0`` before being handed to the
+    reference BVP solver, which still requires 3 components.
     """
     if abs(float(prob.gamma) - 2.0) >= 1e-6:
         raise ValueError(
             f"BVP costate available only for γ=2; prob.gamma={prob.gamma}"
         )
 
+    z0_arr = np.asarray(z0).reshape(-1)
+    if z0_arr.shape == (2,):
+        z0_arr = np.concatenate([z0_arr, np.array([0.0])])
+
     solver = AlmgrenChrissBVPSolver(prob)
-    bvp_traj = solver.solve(np.asarray(z0).reshape(-1))
+    bvp_traj = solver.solve(z0_arr)
     # Reconstruct (p_q, p_S) on the BVP grid by re-running the BVP at the
     # same nodes.  AlmgrenChrissBVPSolver doesn't expose them directly,
     # so we redo the solve and read off the costates.
     from scipy.integrate import solve_bvp
-    q0, S0 = float(z0[0]), float(z0[1])
+    q0, S0 = float(z0_arr[0]), float(z0_arr[1])
     t_nodes = np.linspace(prob.t_initial, prob.t_final, solver.n_bvp_nodes)
     y_init = np.zeros((4, len(t_nodes)))
     y_init[0] = np.linspace(q0, 0.0, len(t_nodes))
@@ -375,9 +385,74 @@ def liquidation_costate_vs_bvp_panels() -> List[Panel]:
     ]
 
 
+def liquidation_u_decomposition_panel(prob: Any, asset: int = 0) -> Panel:
+    """One additive panel: ``u*(t) = prob.optimal_u_from_costate(t, z, p_θ)``
+    sampled along the JFB rollout.
+
+    Renders the closed-form PMP optimum evaluated on the **learned**
+    costate ``p_θ`` from ``meta["p_theta"]`` of a trajectory produced by
+    :func:`diagnostic_rollout`.  Because ``z(t)`` and ``p_θ(t)`` come
+    from the JFB rollout, the gap between this curve and the trajectory's
+    own ``u(t)`` isolates the **inner-FP convergence error** (no
+    re-rollout needed).
+
+    Parameters
+    ----------
+    prob
+        Problem exposing :meth:`ImplicitOC.optimal_u_from_costate`.
+        Must satisfy ``prob.has_closed_form_u_star() is True``.
+    asset
+        Which control component to plot (default 0).  For single-asset
+        problems this is the only choice.
+
+    Notes
+    -----
+    The legacy ``pin_p_X`` knob has been removed: in the reduced
+    :class:`LiquidationPortfolioOC` formulation there is no ``p_X`` in
+    the costate (cash ``X`` is no longer an OC state) and
+    ``optimal_u_from_costate`` does not divide by ``p_X``, so the
+    blow-up the knob used to mask cannot occur.
+
+    Trajectories produced by :class:`benchmarking.JFBPolicyRollout` carry
+    a cash observer column (``[q, S, X_obs]``, shape ``(N, 2n+1)``); we
+    slice off the OC state (the first ``state_dim`` columns) before
+    feeding it into ``optimal_u_from_costate``.
+    """
+    if not prob.has_closed_form_u_star():
+        raise ValueError(
+            f"{type(prob).__name__} does not implement a closed-form u*; "
+            "liquidation_u_decomposition_panel requires it."
+        )
+
+    state_dim = int(getattr(prob, "state_dim"))
+
+    def _extract(traj: Trajectory) -> Tuple[np.ndarray, np.ndarray]:
+        p_arr = traj.meta.get("p_theta")
+        if p_arr is None:
+            return np.empty(0), np.empty(0)
+        # Trajectory.z may include a trailing cash observer column
+        # (rollouts) or be exactly state_dim wide (diagnostic rollouts);
+        # always feed the closed-form formula the OC state only.
+        z_full = np.asarray(traj.z)
+        z_oc = z_full[:, :state_dim]
+        z_t = torch.as_tensor(z_oc, dtype=torch.float32)          # (N, state_dim)
+        p_t = torch.as_tensor(np.asarray(p_arr), dtype=torch.float32)
+        with torch.no_grad():
+            u = prob.optimal_u_from_costate(0.0, z_t, p_t)        # (N, control_dim)
+        return traj.t, u.cpu().numpy()[:, asset]
+
+    return Panel(
+        f"u*(p_θ) along JFB rollout  [asset {asset}]",
+        _extract,
+        ylabel="u*",
+        xlabel="t",
+    )
+
+
 __all__ = [
     "diagnostic_rollout",
     "diagnostic_panels",
     "attach_bvp_costate_to_meta",
     "liquidation_costate_vs_bvp_panels",
+    "liquidation_u_decomposition_panel",
 ]

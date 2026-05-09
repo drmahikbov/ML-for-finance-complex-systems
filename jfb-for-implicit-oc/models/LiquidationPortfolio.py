@@ -12,23 +12,57 @@ from benchmarking.plotter import Panel, liquidation_panels
 
 class LiquidationPortfolioOC(ImplicitOC):
     """
-    Single-asset liquidation as a finite-horizon optimal control problem.
+    Multi-asset Almgren-Chriss liquidation as a finite-horizon OC problem,
+    in its **reduced** formulation (cash account ``X`` removed from the
+    OC state).
 
-    State ``z = [q, S, X]``: remaining inventory, impacted execution price, and
-    accumulated cash. Control ``u`` is the scalar trading (selling) rate.
+    OC state ``z = [q_1..q_n, S_1..S_n] in R^{2n}`` with ``n = n_assets``.
+    Control ``u in R^n`` is the per-asset selling rate.
 
     Continuous-time dynamics (right-hand side of the controlled ODE):
 
-        dq/dt = -u
-        dS/dt = -kappa * u
-        dX/dt = S*u - eta * (u^2 + epsilon)^(gamma/2)
+        dq_i/dt = -u_i                       (no z-dependence)
+        dS_i/dt = -kappa_i * u_i             (linear permanent impact)
 
-    Running cost (Lagrangian): ``0.5 * sigma^2 * q^2`` — inventory-risk penalty
-    while liquidating. Terminal cost: ``G = -X(T) + alpha * q(T)^2`` — reward
-    terminal cash via ``-X``, penalize leftover inventory via ``alpha * q^2``.
-    Minimizing the objective therefore discourages carrying risk during the
-    trade, pushes toward higher terminal proceeds, and discourages unfinished
-    liquidation (large ``q(T)``).
+    Running cost (Lagrangian) — absorbs the impact term into ``L``:
+
+        L'(t, z, u) = 1/2 * sum_i sigma_i^2 q_i^2
+                      - sum_i S_i u_i
+                      + sum_i eta_i * (u_i^2 + epsilon)^(gamma/2)
+
+    Terminal cost (no ``-X`` term):
+
+        G'(z(T)) = alpha * sum_i q_i(T)^2
+
+    Mathematical equivalence with the legacy 3-state ``[q, S, X]`` problem
+    is exact (no martingale assumption, no approximation):
+
+        J_B  = - X(0) + integral [ 1/2 sigma^2 q^2 - S u + eta (u^2+eps)^{g/2} ] dt
+                       + alpha q(T)^2
+             = - X(0) + J_B'
+
+    The constant ``-X(0)`` is independent of the policy, so
+    ``argmin J_B == argmin J_B'``.
+
+    Why this matters for JFB
+    ------------------------
+    With the impact term inside ``L'``, the Hamiltonian curvature in ``u``
+    is a **problem constant** (``2 eta`` for ``gamma = 2``) instead of
+    being the learned costate ``-2 eta * p_X``. The fixed-point operator
+    ``T(u) = u - alpha_fp * grad_u H`` is then contractive from epoch zero
+    with ``alpha_fp = 1/(2 eta)``: T(u) becomes one-step exact and equals
+    the closed-form ``u* = (S + p_q + kappa p_S)/(2 eta)``. This is the
+    same one-shot FP behaviour as the canonical Almgren-Chriss in
+    ``jfb-new-copy/AlmgrenChriss.py``.
+
+    Observer cash account
+    ---------------------
+    ``X`` is integrated in parallel via :meth:`compute_cash_flow`. It is
+    **never** an OC state, never enters ``Phi``, ``compute_grad_H_u``,
+    the FP iteration, the JFB unrolled tail, or the loss. It exists only
+    on the plotting / financial-reporting boundary so figures and reports
+    can still display ``X(t)`` exactly. ``self.X0`` stores the initial
+    cash level used by the observer.
     """
 
     def __init__(
@@ -52,9 +86,11 @@ class LiquidationPortfolioOC(ImplicitOC):
         alphaHJB=(0.0, 0.0),
         alphaadj=(0.0, 0.0),
     ):
-        # State layout: q = remaining inventory, S = impacted price, X = accumulated cash.
-        # Control: u = selling rate (aligned with dq/dt = -u).
-        state_dim = 2 * n_assets + 1  # (q1, q2,..., S1, S2,..., X) 
+        # OC state: (q_1..q_n, S_1..S_n) ∈ R^{2n}. The cash account X is NOT
+        # part of the OC state — it is integrated separately by the observer
+        # `compute_cash_flow` so it can be plotted/reported without inflating
+        # the OC dimension or polluting the Hamiltonian curvature in u.
+        state_dim = 2 * n_assets
         control_dim = n_assets  # (u1, u2, ...)
         # Time discretization and batch: horizon [t_initial, t_final], nt steps, parallel trajectories.
         super().__init__(
@@ -121,24 +157,20 @@ class LiquidationPortfolioOC(ImplicitOC):
         self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
     ) -> torch.Tensor:
         """
-        Running inventory-risk penalty (Lagrangian).
+        Running cost L'(t, z, u) of the **reduced** Almgren-Chriss problem.
 
-        ``L = 0.5 * sigma^2 * q^2`` depends only on inventory ``q``, not directly on
-        the control ``u``. Returns one scalar per batch element, shape ``(batch,)``,
-        or a scalar when a single unbatched state/control pair is passed (see branch
-        below) for ``vmap``/Jacobian checks.
+        ``L'`` absorbs the negated cash-flow term and the nonlinear impact
+        cost that used to live in ``dX/dt`` of the legacy formulation:
 
-        Args:
-            t: Current time (unused in this running cost).
-            z: State, shape ``(batch, state_dim)`` or ``(state_dim,)`` for single-sample calls.
-            u: Control, shape ``(batch, control_dim)`` or ``(control_dim,)`` (unused in L).
+            L'(t, z, u) = 1/2 sum_i sigma_i^2 q_i^2
+                          - sum_i S_i u_i
+                          + sum_i eta_i * (u_i^2 + epsilon)^(gamma/2).
 
-        Returns:
-            Tensor of shape ``(batch,)`` or 0-dim when the unbatched branch strips the batch dim.
+        Equivalence with the legacy 3-state J_B is exact:
+        ``J_B = -X(0) + integral L' dt + alpha sum_i q_i(T)^2`` (see class
+        docstring). Returns one scalar per batch element, shape
+        ``(batch,)`` (or 0-dim under the unbatched ``vmap`` branch).
         """
-
-        # Single-sample path: normalize one (state_dim,) / (control_dim,) pair to batch shape (1, ...)
-        # so downstream indexing z[:, 0] stays valid; autograd + vmap use this layout.
         if z.dim() == 1:
             z = z.unsqueeze(0)
             u = u.unsqueeze(0)
@@ -146,29 +178,39 @@ class LiquidationPortfolioOC(ImplicitOC):
         else:
             squeeze = False
 
-        q = z[:, :self.n_assets]  # inventory, shape (batch, n_assets)
-        # Carrying inventory is risky; larger sigma amplifies the quadratic penalty on q.
-        lag = 0.5 * torch.sum((self.sigma**2) * (q**2), dim=1)  # shape (batch,) — identity covariance: ½ qᵀ diag(σ²) q
+        n = self.n_assets
+        q = z[:, :n]
+        S = z[:, n:2 * n]
+
+        inv_risk    = 0.5 * torch.sum((self.sigma ** 2) * (q ** 2), dim=1)
+        # Cash flow appears with a MINUS sign: the OC minimises the running
+        # cost, and trading revenue S·u is income (negative cost).
+        cash_flow   = -torch.sum(S * u, dim=1)
+        # Smooth impact cost — same epsilon-regularised form that previously
+        # lived in dX/dt; entering L' is what makes ∂²H/∂u² a problem
+        # constant (2η for γ=2) rather than a learned quantity.
+        impact_cost = torch.sum(
+            self.eta * (u.pow(2) + self.epsilon).pow(self.gamma / 2.0), dim=1
+        )
+
+        lag = inv_risk + cash_flow + impact_cost
         return lag[0] if squeeze else lag
 
     def compute_grad_lagrangian(
         self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
     ) -> torch.Tensor:
         """
-        Partial derivative of the running cost with respect to control: ``dL/du``.
+        ``∂L'/∂u``: nonzero in the reduced formulation (this is the whole
+        point — it gives the FP iteration a strong, well-conditioned
+        gradient signal that does NOT depend on the learned costate).
 
-        Here ``L`` does not depend on ``u``, so ``dL/du`` is identically zero. Along
-        trajectories, the Hamiltonian control signal still comes from the dynamics
-        term ``p^T f`` via ``compute_grad_H_u`` in the trainer / implicit layer, not
-        from ``dL/du``.
+        Per asset i:
 
-        Args:
-            t: Current time.
-            z: State, batched or unbatched like ``compute_lagrangian``.
-            u: Control; same shape as the policy output, ``(batch, control_dim)``.
+            ∂L'/∂u_i = -S_i + eta_i * gamma * u_i * (u_i^2 + eps)^(gamma/2 - 1).
 
-        Returns:
-            Zero tensor with the **same shape as ``u``** (required by OC interface).
+        For γ = 2 this collapses to ``-S + 2η u`` and ``∂²L'/∂u²|_{γ=2} = 2η``,
+        the constant Hessian that drives one-step contractivity of the
+        T-operator at ``alpha_fp = 1/(2η)``.
         """
         if z.dim() == 1:
             z = z.unsqueeze(0)
@@ -177,8 +219,14 @@ class LiquidationPortfolioOC(ImplicitOC):
         else:
             squeeze = False
 
-        # Match control shape (batch, control_dim) exactly for adjoint / consistency checks.
-        grad = torch.zeros_like(u)
+        n = self.n_assets
+        S = z[:, n:2 * n]
+
+        grad_impact = (
+            self.eta * self.gamma * u
+            * (u.pow(2) + self.epsilon).pow(self.gamma / 2.0 - 1.0)
+        )
+        grad = -S + grad_impact
 
         return grad[0] if squeeze else grad
 
@@ -186,22 +234,18 @@ class LiquidationPortfolioOC(ImplicitOC):
         self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
     ) -> torch.Tensor:
         """
-        Right-hand side ``f(t, z, u) = dz/dt`` of the controlled ODE.
+        Right-hand side ``f'(t, z, u) = dz/dt`` of the **reduced** controlled
+        ODE on ``z = (q, S)``:
 
-        Returns the time derivative of the state with shape ``(batch, state_dim)``.
-        This tensor is what explicit Euler multiplies by ``dt`` when rolling trajectories
-        forward in ``generate_trajectory``.
+            dq_i/dt = -u_i,        dS_i/dt = -kappa_i u_i.
 
-        Args:
-            t: Current time.
-            z: State ``[q, S, X]``, shape ``(batch, 3)`` or ``(3,)``.
-            u: Selling rate, shape ``(batch, 1)`` or ``(1,)``.
+        ``f'`` is independent of ``z`` (so ``∂f'/∂z ≡ 0``) and linear in
+        ``u``. Cash dynamics ``dX/dt = S u - η (u²+ε)^{γ/2}`` are handled
+        outside the OC by :meth:`compute_cash_flow`.
 
-        Returns:
-            ``dz/dt``, shape ``(batch, state_dim)`` (or unbatched equivalent when the squeeze branch applies).
+        Returns ``(batch, state_dim) = (batch, 2n)`` — or the unbatched
+        slice under the ``vmap`` branch.
         """
-
-        # Same single-sample → batch normalization as in compute_lagrangian (vmap / jacrev callers).
         if z.dim() == 1:
             z = z.unsqueeze(0)
             u = u.unsqueeze(0)
@@ -209,39 +253,64 @@ class LiquidationPortfolioOC(ImplicitOC):
         else:
             squeeze = False
 
-        # Column slices (batch, 1): componentwise dynamics, concatenated into (batch, 3) below.
-        q = z[:, :self.n_assets]  # inventory (batch, n_assets)
-        S = z[:, self.n_assets:2*self.n_assets]  # impacted price (batch, n_assets)
-        X = z[:, 2*self.n_assets:2*self.n_assets+1]  # accumulated cash (batch, 1)
+        dq = -u                       # (batch, n)
+        dS = -self.kappa * u          # (batch, n) — kappa broadcasts per asset
 
-        dq = -u  # selling reduces remaining inventory q
-        dS = -self.kappa * u  # linear permanent impact: selling depresses the mid / impacted price S
-        # dX = S * u - self.eta * torch.abs(u).pow(self.gamma)
-        # Cash: revenue S*u minus smoothed nonlinear impact/friction in the selling rate u.
-        trading_cashflow = S * u
-        impact_cost = self.eta * (u.pow(2) + self.epsilon).pow(self.gamma / 2.0)
-        dX = torch.sum(trading_cashflow - impact_cost, dim=1, keepdim=True)  # (batch, 1)
-
-        result = torch.cat((dq, dS, dX), dim=1)  # stack dq/dt, dS/dt, dX/dt into dz/dt
+        result = torch.cat((dq, dS), dim=1)   # (batch, 2n)
         return result[0] if squeeze else result
+
+    def compute_grad_lagrangian_(
+        self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
+    ) -> torch.Tensor:
+        """Unbatched ``∂L'/∂u`` for vmap/jacrev (single-sample variant of
+        :meth:`compute_grad_lagrangian`).
+
+        Same closed-form as the batched routine — ``-S + η γ u (u² + ε)^{γ/2-1}``
+        per asset — on ``(state_dim,) / (control_dim,)`` shapes, matching
+        the contract of :meth:`ImplicitOC.compute_grad_H_u_`.
+        """
+        n = self.n_assets
+        S = z[n:2 * n]                                            # (n,)
+        grad_impact = (
+            self.eta * self.gamma * u
+            * (u.pow(2) + self.epsilon).pow(self.gamma / 2.0 - 1.0)
+        )
+        return -S + grad_impact                                   # (n,)
+
+    def compute_grad_f_u_(
+        self, z: torch.Tensor, u: torch.Tensor, grad_f_u_: torch.Tensor
+    ) -> torch.Tensor:
+        """Unbatched ``∂f'/∂u`` writer for vmap/jacrev (single-sample
+        variant of :meth:`compute_grad_f_u`).
+
+        Buffer shape is ``(control_dim, state_dim) = (n, 2n)``. Layout
+        ``grad[i, s] = ∂f_s/∂u_i``:
+
+            grad[i, i]     = -1               (∂(dq_i/dt)/∂u_i)
+            grad[i, n + i] = -kappa_i         (∂(dS_i/dt)/∂u_i)
+
+        No cash row anymore — ``X`` is observer-only.
+        """
+        n = self.n_assets
+        for i in range(n):
+            grad_f_u_[i, i] = -1.0
+            grad_f_u_[i, n + i] = -self.kappa[i]
+        return grad_f_u_
 
     def compute_grad_f_u(
         self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
     ) -> torch.Tensor:
         """
-        Jacobian ``∂f/∂u`` of the dynamics with respect to the control.
+        Jacobian ``∂f'/∂u`` of the reduced dynamics with respect to ``u``.
 
-        Tensor layout: shape ``(batch, control_dim, state_dim)``. With a single scalar
-        control, row ``[:, 0, :]`` is the gradient of each state equation
-        ``(dq/dt, dS/dt, dX/dt)`` with respect to the trading rate ``u``.
+        Shape ``(batch, control_dim, state_dim) = (B, n, 2n)``. Block layout:
 
-        Args:
-            t: Current time.
-            z: State, shape ``(batch, state_dim)``.
-            u: Control, shape ``(batch, control_dim)``.
+            grad[:, i, i]       = -1                  (∂(dq_i/dt)/∂u_i)
+            grad[:, i, n + i]   = -kappa_i            (∂(dS_i/dt)/∂u_i)
 
-        Returns:
-            ``(batch, control_dim, state_dim)`` Jacobian; here ``(batch, 1, 3)``.
+        Constant in ``z`` and ``u`` (linear dynamics) — this is the other
+        half of why the FP iteration is one-step exact for γ=2: ``∂_u² H``
+        has no ``u``-dependence either.
         """
         if z.dim() == 1:
             z = z.unsqueeze(0)
@@ -251,18 +320,12 @@ class LiquidationPortfolioOC(ImplicitOC):
             squeeze = False
 
         batch = z.shape[0]
-        # One Jacobian "row" per control component × one column per state equation (q, S, X).
-        grad = torch.zeros(batch, self.control_dim,self.state_dim, device=z.device)
+        n = self.n_assets
+        grad = torch.zeros(batch, self.control_dim, self.state_dim, device=z.device)
 
-        S = z[:,  self.n_assets:2*self.n_assets]
-
-        for i in range(self.n_assets):
-            grad[:, i, i] = -1.0                                                # ∂(dq_i/dt)/∂u_i = -1
-            grad[:, i, self.n_assets + i] = -self.kappa[i]                      # ∂(dS_i/dt)/∂u_i = -kappa_i
-
-
-        impact_grad = (self.eta * self.gamma* u* (u.pow(2) + self.epsilon).pow(self.gamma / 2.0 - 1.0))  # derivative of eta*(u^2+eps)^(gamma/2) w.r.t. u (smooth impact term in dX/dt)
-        grad[:, :, 2 * self.n_assets] = S - impact_grad # ∂(dX/dt)/∂u: marginal cash change per unit increase in selling rate
+        for i in range(n):
+            grad[:, i, i] = -1.0
+            grad[:, i, n + i] = -self.kappa[i]
 
         return grad[0] if squeeze else grad
 
@@ -270,28 +333,50 @@ class LiquidationPortfolioOC(ImplicitOC):
         self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
     ) -> torch.Tensor:
         """
-        Jacobian ``∂f/∂z`` of the dynamics with respect to the state.
+        Jacobian ``∂f'/∂z`` of the reduced dynamics with respect to ``z``.
 
-        Shape ``(batch, state_dim, state_dim)``.  **Layout convention** matches
-        :meth:`compute_grad_f_u` and what :meth:`ImplicitOC.compute_grad_H_z`
-        consumes via ``bmm(grad, p)``: the **first** index is the state-derivative
-        axis (``∂/∂z_i``), the **second** index is the dynamics-component axis
-        (``f_s``).  In other words ``grad[b, i, s] == ∂f_s/∂z_i`` — the
-        *transpose* of the natural mathematical Jacobian, exactly as
-        ``torch.bmm(grad, p)`` requires to produce ``∂(p^T f)/∂z``.
+        Shape ``(batch, state_dim, state_dim) = (B, 2n, 2n)``. **Identically
+        zero** in the reduced problem: neither ``dq/dt = -u`` nor ``dS/dt =
+        -κ u`` depends on ``z``. The legacy ``∂f_X/∂z_{S_j} = u_j`` slot
+        no longer exists — that coupling now sits inside ``L'`` via the
+        ``-S·u`` term and is consumed automatically by ``compute_grad_H_z``
+        through ``compute_grad_lagrangian_z`` (default zero in this class
+        for the inventory subgrid; the price-row gradient comes from
+        autograd-on-L if upstream code asks for it).
 
-        Most entries vanish: only ``dX/dt`` depends on ``S`` (through
-        ``Σⱼ S_j u_j``), so ``∂f_X/∂z_{S_j} = u_j`` lives at slot
-        ``[i = n_assets + j, s = 2 * n_assets]`` (for n_assets=1 this
-        reduces to ``[i=S=1, s=X=2]``).
+        Layout convention matches :meth:`compute_grad_f_u` /
+        :meth:`ImplicitOC.compute_grad_H_z`: ``grad[b, i, s] = ∂f_s/∂z_i``.
+        """
+        if z.dim() == 1:
+            z = z.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
 
-        Args:
-            t: Current time.
-            z: State, shape ``(batch, state_dim)``.
-            u: Control, shape ``(batch, control_dim)``.
+        batch = z.shape[0]
+        grad = torch.zeros(batch, self.state_dim, self.state_dim, device=z.device)
 
-        Returns:
-            ``(batch, state_dim, state_dim)`` Jacobian in transposed convention.
+        return grad[0] if squeeze else grad
+
+    # ------------------------------------------------------------------
+    # State gradient of the running cost — needed because L' now depends
+    # on z (through both q and S). Mirrors the pattern used by
+    # MultiBicycleOC / QuadcopterOC: provide ``compute_grad_lagrangian_z``
+    # and override ``compute_grad_H_z`` so adjoint / HJB consistency
+    # diagnostics stay correct when the user enables them
+    # (``alphaadj > 0``).
+    # ------------------------------------------------------------------
+    def compute_grad_lagrangian_z(
+        self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
+    ) -> torch.Tensor:
+        """``∂L'/∂z`` of shape ``(batch, state_dim)``.
+
+        Per asset i:
+
+            ∂L'/∂q_i = sigma_i^2 * q_i      (inventory-risk gradient)
+            ∂L'/∂S_i = -u_i                  (cash-flow gradient: trading
+                                              one unit at price S_i is
+                                              one unit of revenue)
         """
         if z.dim() == 1:
             z = z.unsqueeze(0)
@@ -300,29 +385,44 @@ class LiquidationPortfolioOC(ImplicitOC):
         else:
             squeeze = False
 
-        batch = z.shape[0]
-        # Square Jacobian (batch, 3, 3): columns index ∂/∂q, ∂/∂S, ∂/∂X; rows index state equations.
-        grad = torch.zeros(batch, self.state_dim, self.state_dim, device=z.device)
+        n = self.n_assets
+        q = z[:, :n]
 
-        # ∂f_X/∂z_{S_j} = u_j: only dX/dt depends on each S_j (through S_j*u_j),
-        # so we write u into the column s=X for the rows i=S_1,...,S_n.
-        grad[:, self.n_assets:2 * self.n_assets, 2 * self.n_assets] = u
+        grad = torch.zeros(z.shape[0], self.state_dim, device=z.device)
+        grad[:, :n]      = (self.sigma ** 2) * q
+        grad[:, n:2 * n] = -u
 
         return grad[0] if squeeze else grad
 
+    def compute_grad_H_z(
+        self, t: TimeLike, z: torch.Tensor, u: torch.Tensor, p: torch.Tensor
+    ) -> torch.Tensor:
+        """``∂H'/∂z = ∂L'/∂z + ∂(p^T f')/∂z``.
+
+        The parent ``ImplicitOC.compute_grad_H_z`` only returns the
+        ``∂(p^T f)/∂z`` half; we add the L'-gradient here so the
+        adjoint sweep / HJB residual stays correct in this model.
+        """
+        grad_L_z      = self.compute_grad_lagrangian_z(t, z, u)
+        grad_H_z_pTf  = super().compute_grad_H_z(t, z, u, p)
+        return grad_L_z + grad_H_z_pTf
+
     def compute_G(self, z: torch.Tensor) -> torch.Tensor:
         """
-        Terminal cost ``G(z(T))`` (discounting handled in the base OC if applicable).
+        Reduced terminal cost ``G'(z(T)) = alpha * sum_i q_i(T)^2``.
 
-        ``-X`` rewards terminal cash (larger X lowers G). ``alpha * q^2`` penalizes
-        leftover inventory at the horizon. Minimizing G pushes the policy toward
-        higher terminal proceeds while completing liquidation (small ``q(T)``).
+        The legacy ``-X(T)`` term has been absorbed into the running cost
+        as ``-S·u`` (via ``J_B = -X(0) + J_B'``), so ``G'`` is now purely
+        quadratic in ``q`` — a perfect match for the quadratic head of the
+        ``Phi`` / ``TerminalAnchoredPhi`` value-function network.
 
         Args:
-            z: Terminal state, shape ``(batch, state_dim)`` or ``(state_dim,)``.
+            z: Terminal state ``(q, S)``, shape ``(batch, 2n)`` or
+               ``(2n,)``.
 
         Returns:
-            Scalar terminal cost per trajectory, shape ``(batch,)`` or 0-dim when unbatched.
+            Scalar terminal cost per trajectory, shape ``(batch,)`` or
+            0-dim when unbatched.
         """
         if z.dim() == 1:
             z = z.unsqueeze(0)
@@ -330,24 +430,20 @@ class LiquidationPortfolioOC(ImplicitOC):
         else:
             squeeze = False
 
-        q = z[:, :self.n_assets]  # inventory (batch, n_assets)
-        X = z[:, 2*self.n_assets]  # accumulated cash (batch,)
-
-        G = -X + self.alpha * torch.sum(q ** 2, dim=1)  # cash reward vs. unfinished liquidation penalty
+        q = z[:, :self.n_assets]
+        G = self.alpha * torch.sum(q ** 2, dim=1)
         return G[0] if squeeze else G
 
     def compute_grad_G_z(self, z: torch.Tensor) -> torch.Tensor:
         """
-        Gradient ``∂G/∂z`` of the terminal cost with respect to the terminal state.
+        Gradient ``∂G'/∂z`` of the reduced terminal cost.
 
-        Supplies the terminal condition for the adjoint / costate equation in
-        Pontryagin-type training. Shape ``(batch, state_dim)``.
+        Only the ``q`` block is nonzero: ``∂G'/∂q_i = 2 alpha q_i`` and
+        ``∂G'/∂S_i = 0``. The legacy ``∂G/∂X = -1`` slot no longer exists
+        (no ``X`` in the OC state). Used by :class:`TerminalAnchoredPhi`
+        to hard-anchor ``p_q(T) = 2α q(T)``, ``p_S(T) = 0``.
 
-        Args:
-            z: Terminal state, shape ``(batch, state_dim)`` or ``(state_dim,)``.
-
-        Returns:
-            ``(batch, state_dim)`` gradient (or unbatched 1D slice when squeeze applies).
+        Returns ``(batch, state_dim)`` (or 1D under the unbatched branch).
         """
         if z.dim() == 1:
             z = z.unsqueeze(0)
@@ -359,25 +455,132 @@ class LiquidationPortfolioOC(ImplicitOC):
         grad = torch.zeros(batch, self.state_dim, device=z.device)
 
         q = z[:, :self.n_assets]
-        grad[:, :self.n_assets] = 2.0 * self.alpha * q  # marginal cost of carrying one more unit of q at T
-        grad[:, 2 * self.n_assets] = -1.0  # marginal value of terminal cash: +1 to X decreases G by 1
+        grad[:, :self.n_assets] = 2.0 * self.alpha * q
 
         return grad[0] if squeeze else grad
 
+    # ------------------------------------------------------------------
+    # Closed-form PMP optimum (γ=2 Almgren-Chriss)
+    # ------------------------------------------------------------------
+    def has_closed_form_u_star(self) -> bool:
+        """γ=2 makes ``∂_u H`` linear in u, so a closed-form minimiser exists."""
+        return abs(float(self.gamma) - 2.0) < 1e-6
+
+    def optimal_u_from_costate(
+        self, t: TimeLike, z: torch.Tensor, p: torch.Tensor
+    ) -> torch.Tensor:
+        """Closed-form ``argmin_u H'`` at γ=2 in the **reduced** problem.
+
+        With ``H' = L' + p^T f'`` and ``L'`` carrying the
+        ``-S·u + η u²`` terms, stationarity ``∂_u H' = 0`` gives, per
+        asset:
+
+            -S_i + 2 η_i u_i  -  p_{q_i}  -  κ_i p_{S_i}  =  0
+            =>  u*_i = (S_i + p_{q_i} + κ_i p_{S_i}) / (2 η_i).
+
+        No ``p_X`` appears anywhere — the formula is a strictly
+        well-conditioned linear function of the learned costate ``p ∈
+        R^{2n}``. Inputs:
+
+        * ``z``: ``(B, 2n)`` (or ``(2n,)``)
+        * ``p``: ``(B, 2n)`` (or ``(2n,)``)
+
+        Returns ``(B, n)`` (or ``(n,)`` unbatched).
+        """
+        if z.dim() == 1:
+            z = z.unsqueeze(0)
+            p = p.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
+
+        n = self.n_assets
+        S   = z[:, n:2 * n]               # (B, n)
+        p_q = p[:, :n]                    # (B, n)
+        p_S = p[:, n:2 * n]               # (B, n)
+
+        u = (S + p_q + self.kappa * p_S) / (2.0 * self.eta)
+        return u[0] if squeeze else u
+
+    # ------------------------------------------------------------------
+    # Costate / value-function network factory override
+    # ------------------------------------------------------------------
+    def make_p_net(
+        self,
+        hidden_dim: int = 50,
+        n_resnet_layers: int = 3,
+        device: "str | None" = None,
+    ):
+        """Return a :class:`TerminalAnchoredPhi` wrapping a generic ``Phi`` backbone.
+
+        The reduced Almgren-Chriss terminal cost ``G'(z) = α ‖q‖²`` is
+        purely quadratic in ``q`` and analytically known, so we hard-anchor
+        the architecture via ``phi(t, z) = G'(z) + (T - t) N_theta(t, z)``.
+        This guarantees ``phi(T, z) = G'(z)`` and consequently
+        ``p_q(T) = 2α q(T)``, ``p_S(T) = 0`` by construction — no soft
+        adjoint penalty needed. The wrapper is generic and only depends on
+        :meth:`compute_G` / :meth:`compute_grad_G_z`.
+        """
+        from ImplicitNets import Phi, TerminalAnchoredPhi
+        dev = device or self.device
+        backbone = Phi(n_resnet_layers, hidden_dim, self.state_dim, dev=dev)
+        return TerminalAnchoredPhi(backbone, self, dev=dev)
+
     def sample_initial_condition(self):
         """
-        Sample initial states for training rollouts.
+        Sample initial OC states for training rollouts.
 
-        Initial inventory ``q0`` is uniform on ``[q0_min, q0_max]``; ``S0`` and ``X0``
-        are fixed constants across the batch. The policy is therefore trained against
-        a **family** of initial inventories, not a single deterministic ``z0``.
+        Returns shape ``(batch, 2n) = (batch, state_dim)``:
+        ``z0 = concat(q0, S0)``. ``q0`` is uniform on
+        ``[q0_min, q0_max]``; ``S0`` is constant across the batch.
+
+        ``X0`` is **not** part of the OC state. It is reserved for the
+        observer cash account and consumed by :meth:`compute_cash_flow`
+        callers (e.g. the rollout adapter in
+        :class:`benchmarking.solvers.JFBPolicyRollout`).
         """
-        q0 = self.q0_min.unsqueeze(0) + (self.q0_max - self.q0_min).unsqueeze(0) * torch.rand(self.batch_size, self.n_assets, device=self.device)
-
+        q0 = (
+            self.q0_min.unsqueeze(0)
+            + (self.q0_max - self.q0_min).unsqueeze(0)
+            * torch.rand(self.batch_size, self.n_assets, device=self.device)
+        )
         S0 = self.S0.unsqueeze(0).expand(self.batch_size, -1)
-        X0 = torch.full((self.batch_size, 1), self.X0, device=self.device)
-        # Concatenate along feature dim → shape (batch, 3) == (batch, state_dim).
-        return torch.cat((q0, S0, X0), dim=1).to(self.device)
+
+        return torch.cat((q0, S0), dim=1).to(self.device)
+
+    # ------------------------------------------------------------------
+    # Observer cash account (NOT part of the OC state)
+    # ------------------------------------------------------------------
+    def compute_cash_flow(
+        self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
+    ) -> torch.Tensor:
+        """Right-hand side of the cash-account ODE, integrated in parallel
+        to ``compute_f`` for plotting / financial reporting only.
+
+            dX/dt = sum_i [ S_i u_i  -  eta_i (u_i^2 + epsilon)^(gamma/2) ].
+
+        This is exactly the legacy ``dX/dt`` row that was removed from
+        :meth:`compute_f` when ``X`` was eliminated from the OC state.
+        It is **never** called by ``ImplicitOC`` or the JFB / FP
+        machinery; it exists purely so the rollout adapters can produce a
+        ``(batch, 1)`` cash trajectory with the same Euler discretisation
+        as the OC state.
+
+        Returns ``(batch, 1)`` (or ``(1,)`` unbatched).
+        """
+        if z.dim() == 1:
+            z = z.unsqueeze(0)
+            u = u.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
+
+        n = self.n_assets
+        S = z[:, n:2 * n]
+        trading_revenue = S * u
+        impact_cost = self.eta * (u.pow(2) + self.epsilon).pow(self.gamma / 2.0)
+        dX = torch.sum(trading_revenue - impact_cost, dim=1, keepdim=True)
+        return dX[0] if squeeze else dX
 
     # ------------------------------------------------------------------
     # Legacy plotting (kept for reference, superseded by panels/to_trajectory)
@@ -490,6 +693,7 @@ class LiquidationPortfolioOC(ImplicitOC):
         policy=None,
         path_index: int = 0,
         label: str = "JFB",
+        x_traj: "torch.Tensor | None" = None,
     ) -> Trajectory:
         """Pack a rolled-out tensor into a :class:`benchmarking.Trajectory`.
 
@@ -497,18 +701,27 @@ class LiquidationPortfolioOC(ImplicitOC):
         ----------
         z_traj
             Output of :meth:`generate_trajectory(..., return_full_trajectory=True)`,
-            shape ``(batch, state_dim, nt+1)``.
+            shape ``(batch, state_dim, nt+1) = (batch, 2n, nt+1)``. Carries
+            only the OC state ``(q, S)``.
         policy
             Optional callable ``policy(z, t) -> u``. If supplied, the control
             ``u(t)`` is reconstructed by evaluating the policy along the
             selected trajectory exactly as :meth:`generate_trajectory` does
             during the forward Euler march.
         path_index
-            Which sample of the batch to package (default ``0``). The returned
-            trajectory is *deterministic* in the benchmarking sense: shape
-            ``(N, state_dim)`` for ``z`` and ``(N-1, control_dim)`` for ``u``.
+            Which sample of the batch to package (default ``0``).
         label
             Legend label propagated into the resulting figure.
+        x_traj
+            Optional observer cash trajectory of shape ``(batch, 1, nt+1)``
+            produced by :meth:`generate_trajectory(..., return_cash=True)`.
+            When supplied, the returned ``Trajectory.z`` is packed as
+            ``concat([q, S, X], axis=1)`` of shape ``(nt+1, 2n+1)`` so the
+            existing plotter (which extracts ``X`` at column ``2n``) keeps
+            working unchanged. When ``x_traj`` is ``None`` and ``policy``
+            is supplied, ``X`` is reconstructed by trapezoidal quadrature
+            from the policy outputs and the rolled-out ``(q, S)`` so the
+            cash panel is always populated.
         """
         z_traj = z_traj.detach()
         batch, state_dim, nt1 = z_traj.shape
@@ -517,7 +730,7 @@ class LiquidationPortfolioOC(ImplicitOC):
         nt = nt1 - 1
 
         t_np = np.linspace(self.t_initial, self.t_final, nt1)
-        z_np = z_traj[path_index].transpose(0, 1).cpu().numpy()  # (nt+1, state_dim)
+        z_np = z_traj[path_index].transpose(0, 1).cpu().numpy()  # (nt+1, 2n)
 
         u_np = None
         if policy is not None:
@@ -531,65 +744,118 @@ class LiquidationPortfolioOC(ImplicitOC):
                     u_buf[:, i] = u_i[0]
             u_np = u_buf.transpose(0, 1).cpu().numpy()  # (nt, control_dim)
 
+        # Cash column: prefer the supplied observer; otherwise integrate
+        # `compute_cash_flow` from the policy controls (left-endpoint Euler,
+        # matching `generate_trajectory(..., return_cash=True)`).
+        n = self.n_assets
+        x_col = None
+        if x_traj is not None:
+            x_col = x_traj.detach()[path_index, 0].cpu().numpy()        # (nt+1,)
+        elif u_np is not None:
+            dt = (self.t_final - self.t_initial) / nt
+            x_col = np.zeros(nt1, dtype=np.float64)
+            x_col[0] = float(self.X0)
+            S_path = z_np[:, n:2 * n]
+            for i in range(nt):
+                u_i = u_np[i]
+                S_i = S_path[i]
+                rev = float(np.sum(S_i * u_i))
+                imp = float(np.sum(
+                    np.asarray(self.eta.detach().cpu().numpy())
+                    * (u_i ** 2 + self.epsilon) ** (self.gamma / 2.0)
+                ))
+                x_col[i + 1] = x_col[i] + dt * (rev - imp)
+
+        if x_col is not None:
+            z_packed = np.concatenate([z_np, x_col[:, None]], axis=1)   # (nt+1, 2n+1)
+        else:
+            z_packed = z_np
+
         return Trajectory(
             t=t_np,
-            z=z_np,
+            z=z_packed,
             u=u_np,
             label=label,
             style={"color": "#d6604d", "lw": 2.0},
         )
 
-    def generate_trajectory(self, u, z0, nt, return_full_trajectory=False):
+    def generate_trajectory(
+        self,
+        u,
+        z0,
+        nt,
+        return_full_trajectory: bool = False,
+        return_cash: bool = False,
+    ):
         """
-        Forward-simulate the controlled ODE with **explicit Euler** time stepping.
+        Forward-simulate the **reduced** controlled ODE with explicit Euler.
 
-        **State layout.** ``z0`` has shape ``(batch, state_dim)`` with ``state_dim = 3``.
-        The trajectory buffer ``traj`` has shape ``(batch, state_dim, nt + 1)``:
-        ``traj[:, :, 0]`` is the initial condition; index ``i`` holds the state after
-        ``i`` Euler steps (consistent with control index ``i`` used below).
+        **OC state.** ``z0`` has shape ``(batch, state_dim) = (batch, 2n)``
+        and the trajectory buffer ``traj`` has shape ``(batch, 2n, nt + 1)``.
+        ``traj[:, :, 0]`` is the initial condition.
 
-        **Control input.** ``u`` may be either:
+        **Control input.** Same contract as before:
 
-        1. A tensor of shape ``(batch, control_dim, nt)`` giving the open-loop control
-           at each discrete time index ``i = 0, ..., nt-1``, or
-        2. A callable ``u(z, t)`` implementing a feedback policy: must return controls
-           of shape ``(batch, control_dim)`` for the current state ``z`` and time ``t``.
+        1. tensor ``(batch, control_dim, nt)`` for open-loop, or
+        2. callable ``u(z, t) -> (batch, control_dim)`` for feedback.
 
-        **Update.** With uniform step ``dt = (t_final - t_initial) / nt``,
+        **Cash observer (optional).** When ``return_cash=True`` the method
+        also integrates ``compute_cash_flow`` in parallel — same Euler
+        discretisation, started from ``self.X0`` — and returns
+        ``(traj, x_traj)`` where ``x_traj`` has shape
+        ``(batch, 1, nt + 1)``. ``X`` is **never** read by the OC update,
+        so this branch is purely additive and OC training behaviour stays
+        bit-for-bit identical when ``return_cash=False``.
 
-            z_{i+1} = z_i + dt * f(t_i, z_i, u_i).
+        **Return value.**
 
-        **Return value.** If ``return_full_trajectory`` is False, returns only the
-        terminal state ``traj[:, :, -1]`` of shape ``(batch, state_dim)``; otherwise
-        returns the full path ``traj``.
+        * ``return_full_trajectory=False, return_cash=False``: terminal
+          ``traj[:, :, -1]`` of shape ``(batch, 2n)`` (legacy default).
+        * ``return_full_trajectory=True,  return_cash=False``: full
+          ``traj`` of shape ``(batch, 2n, nt+1)``.
+        * ``return_cash=True``: tuple ``(out, x_traj)`` where ``out`` is
+          either the terminal slice or the full ``traj`` per the flag
+          above, and ``x_traj`` is the parallel cash buffer.
         """
         batch = z0.shape[0]
         D = self.state_dim
 
-        # Preallocate full path so time index i is always traj[:, :, i] (and controls align with i).
         traj = torch.zeros(batch, D, nt + 1, device=z0.device)
-        traj[:, :, 0] = z0  # initial condition at discrete time index 0
-        dt = (self.t_final - self.t_initial) / nt  # uniform Euler step over the horizon
+        traj[:, :, 0] = z0
+        dt = (self.t_final - self.t_initial) / nt
         t = self.t_initial
 
-        # March forward: one explicit Euler step per loop iteration.
+        if return_cash:
+            x_traj = torch.zeros(batch, 1, nt + 1, device=z0.device)
+            x_traj[:, :, 0] = float(self.X0)
+
         for i in range(nt):
             if torch.is_tensor(u):
-                curr = u[:, :, i]  # open-loop: use control already stored for this time index
+                curr = u[:, :, i]
             else:
-                curr = u(traj[:, :, i], t)  # closed-loop: policy evaluated at current state and time
+                curr = u(traj[:, :, i], t)
             traj[:, :, i + 1] = traj[:, :, i] + dt * self.compute_f(
                 t, traj[:, :, i], curr
-            )  # Euler discretization of dz/dt = f(t, z, u)
+            )
+            if return_cash:
+                x_traj[:, :, i + 1] = x_traj[:, :, i] + dt * self.compute_cash_flow(
+                    t, traj[:, :, i], curr
+                )
             t += dt
-        # Either the entire state trajectory or only the terminal layer z(T).
-        return traj if return_full_trajectory else traj[:, :, -1]
+
+        out = traj if return_full_trajectory else traj[:, :, -1]
+        if return_cash:
+            return out, x_traj
+        return out
 
 
-# Example usage
+# Example usage / structural smoke test
 if __name__ == "__main__":
 
-    # Local smoke test: derivative consistency (analytical vs autograd references).
+    # ------------------------------------------------------------------
+    # Local smoke test: derivative consistency + reduced-formulation
+    # structural diagnostics.
+    # ------------------------------------------------------------------
     device = "cpu"
     batch_size = 10
     nt = 100
@@ -613,24 +879,97 @@ if __name__ == "__main__":
         device=device,
     )
 
-    # Example open-loop control trajectory for quick sanity checks (not used in GradientTester below).
-    u_rand = torch.randn(batch_size, prob.control_dim, nt, device=device)
-
-    # Gradient tests: small hand-picked (z, u) pairs in the multi-asset
-    # state layout [q_1,...,q_n, S_1,...,S_n, X]. Two distinct seed states
-    # are tiled across the batch so the analytical/autograd Jacobians are
-    # exercised on more than one operating point.
     n = prob.n_assets
+
+    # Build (z, u) seed batch matching the new state layout [q, S] (no X).
     q_seed = torch.tensor([[1.0] * n, [0.8] * n], dtype=torch.float32)
     S_seed = torch.tensor([[1.0] * n, [1.1] * n], dtype=torch.float32)
-    X_seed = torch.tensor([[0.0], [0.1]], dtype=torch.float32)
-    test_z = torch.cat([q_seed, S_seed, X_seed], dim=1)
+    test_z = torch.cat([q_seed, S_seed], dim=1)
     test_u = torch.tensor([[0.1] * n, [0.2] * n], dtype=torch.float32)
-
-    # ...tiled to match prob.batch_size so Jacobian checks run in batch layout.
     test_z = test_z.repeat(batch_size // 2, 1).to(device)
     test_u = test_u.repeat(batch_size // 2, 1).to(device)
 
     print("Running gradient tests...")
-    # Compares hand-coded dynamics / cost derivatives against autograd-based references.
     GradientTester.run_all_tests(prob, test_z, test_u)
+
+    # ------------------------------------------------------------------
+    # Structural diagnostics for the reduced formulation
+    # ------------------------------------------------------------------
+    print()
+    print("=== Reduced LiquidationPortfolio diagnostics ===")
+
+    # (1) state_dim must be 2 * n_assets
+    assert prob.state_dim == 2 * n, (
+        f"state_dim mismatch: got {prob.state_dim}, expected {2 * n}"
+    )
+    print(f"(1) state_dim == 2 * n_assets : OK  ({prob.state_dim})")
+
+    # (2) ∂_u H residual at u* is zero (per closed-form formula)
+    eta = prob.eta
+    kappa = prob.kappa
+    z_pt = test_z[:1].clone()                           # single sample
+    p_pt = torch.randn(1, prob.state_dim) * 0.1
+    t0 = float(prob.t_initial)
+    t_pt = torch.tensor([t0])
+
+    u_star = prob.optimal_u_from_costate(t0, z_pt, p_pt)
+    grad_H_at_ustar = prob.compute_grad_H_u(t_pt, z_pt, u_star, p_pt)
+    res_norm = float(torch.linalg.vector_norm(grad_H_at_ustar))
+    print(
+        f"(2) ||∂_u H(u*)||                 : {res_norm:.3e} "
+        f"(should be ≈ 0)"
+    )
+
+    # (3) One-shot T-operator exactness: with α_fp = 1/(2η), one
+    # gradient-descent step from any u_init lands on u*.
+    alpha_fp = 1.0 / (2.0 * eta)                        # (n,)
+    u_init = torch.randn_like(u_star)
+    grad_H_init = prob.compute_grad_H_u(t_pt, z_pt, u_init, p_pt)
+    u_after_one_step = u_init - alpha_fp * grad_H_init
+    one_shot_err = float(torch.linalg.vector_norm(u_after_one_step - u_star))
+    print(
+        f"(3) ||T(u_init) - u*|| (1 step)   : {one_shot_err:.3e} "
+        f"(should be ≈ 0 at γ=2)"
+    )
+
+    # (4) J_B  ==  -X(0) + J_B'  along a random open-loop rollout.
+    #
+    # Uses generate_trajectory(..., return_cash=True) so the same Euler grid
+    # carries both the OC state (q, S) and the observer cash X. The cost
+    # equality is exact up to Euler discretisation.
+    z0 = prob.sample_initial_condition()                # (batch, 2n)
+    u_open = 0.05 * torch.ones(prob.batch_size, prob.control_dim, prob.nt)
+    z_traj_full, x_traj_full = prob.generate_trajectory(
+        u_open, z0, prob.nt, return_full_trajectory=True, return_cash=True,
+    )
+    dt = (prob.t_final - prob.t_initial) / prob.nt
+
+    # J_B' = ∫ L' dt + α‖q(T)‖²
+    JB_prime = torch.zeros(prob.batch_size)
+    t_loop = prob.t_initial
+    for i in range(prob.nt):
+        z_i = z_traj_full[:, :, i]
+        u_i = u_open[:, :, i]
+        JB_prime = JB_prime + dt * prob.compute_lagrangian(t_loop, z_i, u_i)
+        t_loop += dt
+    JB_prime = JB_prime + prob.compute_G(z_traj_full[:, :, -1])
+
+    # J_B (legacy 3-state) = -X(T) + α‖q(T)‖² + ∫ ½σ²q² dt
+    inv_risk_only = torch.zeros(prob.batch_size)
+    t_loop = prob.t_initial
+    for i in range(prob.nt):
+        q_i = z_traj_full[:, :prob.n_assets, i]
+        inv_risk_only = inv_risk_only + dt * 0.5 * torch.sum(
+            (prob.sigma ** 2) * (q_i ** 2), dim=1,
+        )
+        t_loop += dt
+    q_T = z_traj_full[:, :prob.n_assets, -1]
+    X_T = x_traj_full[:, 0, -1]
+    JB_legacy = -X_T + prob.alpha * torch.sum(q_T ** 2, dim=1) + inv_risk_only
+
+    X0_b = torch.full((prob.batch_size,), float(prob.X0))
+    equiv_err = float(torch.max(torch.abs(JB_legacy - (-X0_b + JB_prime))))
+    print(
+        f"(4) max |J_B - (-X(0) + J_B')|    : {equiv_err:.3e} "
+        f"(should be O(Euler error))"
+    )
