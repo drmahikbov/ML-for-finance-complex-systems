@@ -53,6 +53,10 @@ from typing import Any
 import numpy as np
 import torch
 
+import time
+import pandas as pd
+import matplotlib.pyplot as plt
+
 # Local imports: script may be run from project root or this directory.
 # core/ and models/ still use flat imports, so they need to be on sys.path
 # in addition to the package root (which is needed for `core.paths`, etc.).
@@ -446,9 +450,9 @@ def _train_or_load(
     *,
     full_ad: bool,
     trainer_tag: str,
-) -> ImplicitNetOC:
+) -> tuple[ImplicitNetOC, OptimalControlTrainer | None]:
     """Build a fresh ImplicitNetOC and either load weights from
-    ``args.checkpoint`` or train from scratch.
+    ``args.checkpoint`` or train from scratch and return the trained policy and trainer.
 
     Parameters
     ----------
@@ -483,7 +487,7 @@ def _train_or_load(
         inn.load_state_dict(state, strict=True)
         print(f"Loaded policy weights from: {ckpt}")
         inn.eval()
-        return inn
+        return inn, None
 
     if args.train_epochs <= 0:
         raise SystemExit("Provide --checkpoint or set --train-epochs > 0.")
@@ -527,7 +531,7 @@ def _train_or_load(
     # Reset the flag so subsequent rollouts/eval are deterministic.
     prob.track_all_fp_iters = False
     inn.eval()
-    return inn
+    return inn, trainer
 
 
 def _plot_multiasset_rollout(
@@ -677,6 +681,103 @@ def _write_diagnostics(
     )
     print(f"Diagnostics figure written to: {os.path.abspath(diag_out)}")
 
+def plot_jfb_vs_ad_training_curves(
+    trainer_jfb: OptimalControlTrainer | None,
+    trainer_ad: OptimalControlTrainer | None,
+    save_path: str,
+) -> None:
+    """Paper-style comparison plot: JFB vs AD.
+
+    Panels:
+        1. Loss vs Epoch
+        2. Loss vs Time
+        3. Loss vs Work Units
+        4. Memory vs Epoch
+    """
+    if trainer_jfb is None or trainer_ad is None:
+        print("[warn] Missing trainer_jfb or trainer_ad; skipping comparison plot.")
+        return
+
+    hist_jfb_path = trainer_jfb.run_io.history_path()
+    hist_ad_path = trainer_ad.run_io.history_path()
+
+    if not os.path.isfile(hist_jfb_path):
+        print(f"[warn] JFB history not found: {hist_jfb_path}")
+        return
+
+    if not os.path.isfile(hist_ad_path):
+        print(f"[warn] AD history not found: {hist_ad_path}")
+        return
+
+    df_jfb = pd.read_csv(hist_jfb_path)
+    df_ad = pd.read_csv(hist_ad_path)
+
+    # Cumulative training time in minutes.
+    df_jfb["cumulative_time_min"] = df_jfb["time_per_epoch"].cumsum() / 60.0
+    df_ad["cumulative_time_min"] = df_ad["time_per_epoch"].cumsum() / 60.0
+
+    # Cumulative work units.
+    df_jfb["cumulative_work_units"] = df_jfb["work_units"].cumsum()
+    df_ad["cumulative_work_units"] = df_ad["work_units"].cumsum()
+
+    # Prefer GPU memory if available, otherwise CPU memory.
+    if "gpu_max_memory_MB" in df_jfb.columns and df_jfb["gpu_max_memory_MB"].max() > 0:
+        mem_col = "gpu_max_memory_MB"
+        mem_label = "GPU Memory (MB)"
+    else:
+        mem_col = "max_memory_MB"
+        mem_label = "CPU Memory (MB)"
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7))
+
+    # Loss vs Epoch
+    axes[0, 0].plot(df_jfb["epoch"], df_jfb["loss"], label="JFB (ours)", linewidth=2.0)
+    axes[0, 0].plot(df_ad["epoch"], df_ad["loss"], label="AD through FP", linewidth=2.0)
+    axes[0, 0].set_title("Loss vs. Epoch")
+    axes[0, 0].set_xlabel("Epoch")
+    axes[0, 0].set_ylabel("Loss")
+    axes[0, 0].set_yscale("log")
+    axes[0, 0].grid(True, alpha=0.3)
+
+    # Loss vs Time
+    axes[0, 1].plot(df_jfb["cumulative_time_min"], df_jfb["loss"], label="JFB (ours)", linewidth=2.0)
+    axes[0, 1].plot(df_ad["cumulative_time_min"], df_ad["loss"], label="AD through FP", linewidth=2.0)
+    axes[0, 1].set_title("Loss vs. Time")
+    axes[0, 1].set_xlabel("Time (min)")
+    axes[0, 1].set_ylabel("Loss")
+    axes[0, 1].set_yscale("log")
+    axes[0, 1].grid(True, alpha=0.3)
+
+    # Loss vs Work Units
+    axes[1, 0].plot(df_jfb["cumulative_work_units"], df_jfb["loss"], label="JFB (ours)", linewidth=2.0)
+    axes[1, 0].plot(df_ad["cumulative_work_units"], df_ad["loss"], label="AD through FP", linewidth=2.0)
+    axes[1, 0].set_title("Loss vs. Work Units")
+    axes[1, 0].set_xlabel("Work Units")
+    axes[1, 0].set_ylabel("Loss")
+    axes[1, 0].set_xscale("log")
+    axes[1, 0].set_yscale("log")
+    axes[1, 0].grid(True, alpha=0.3)
+
+    # Memory vs Epoch
+    axes[1, 1].plot(df_jfb["epoch"], df_jfb[mem_col], label="JFB (ours)", linewidth=2.0)
+    axes[1, 1].plot(df_ad["epoch"], df_ad[mem_col], label="AD through FP", linewidth=2.0)
+    axes[1, 1].set_title("Memory vs. Epoch")
+    axes[1, 1].set_xlabel("Epoch")
+    axes[1, 1].set_ylabel(mem_label)
+    axes[1, 1].grid(True, alpha=0.3)
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=2)
+
+    fig.suptitle("JFB vs AD through fixed-point iterations")
+    fig.tight_layout(rect=[0, 0.07, 1, 0.94])
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Training comparison plot written to: {os.path.abspath(save_path)}")
+
 
 def main() -> None:
     args = parse_args()
@@ -719,7 +820,7 @@ def main() -> None:
     # we also train a second policy through full autograd.  The user's
     # ``--tag`` is preserved verbatim for the JFB run; the AD run gets an
     # internal ``-fullAD`` suffix so file artifacts don't collide.
-    inn_jfb = _train_or_load(
+    inn_jfb, trainer_jfb = _train_or_load(
         prob, args, device, full_ad=False, trainer_tag=args.tag,
     )
 
@@ -731,7 +832,7 @@ def main() -> None:
                 "(no second AD-trained model is produced)."
             )
         else:
-            inn_ad = _train_or_load(
+            inn_ad, trainer_ad = _train_or_load(
                 prob, args, device, full_ad=True,
                 trainer_tag=f"{args.tag}-fullAD",
             )
@@ -821,6 +922,19 @@ def main() -> None:
                 label="JFB (full AD)",
                 out_filename=f"jfb_diagnostics_{args.tag}-fullAD.png",
             )
+
+
+    if args.full_ad:
+        comparison_path = os.path.join(
+            results_dir(type(prob).__name__, "benchmark"),
+            f"training_curves_jfb_vs_ad_{args.tag}.png",
+        )
+
+        plot_jfb_vs_ad_training_curves(
+            trainer_jfb,
+            trainer_ad,
+            save_path=comparison_path,
+        )
 
 
 if __name__ == "__main__":
