@@ -55,36 +55,40 @@ from core.ImplicitNets import Phi
 from core_RL.Environment import AnalyticalEnvironment
 from core_RL.ImplicitNets_RL import ImplicitNetOC_RL
 from core_RL.JacobianEstimator import RLSJacobianEstimator, OracleJacobianEstimator
-from models.VanDerPolOC_RL import VanDerPolOC_RL
+from models.Hard_Gain_VDP_RL import HardGainVanDerPolOC_RL
 
 # ===========================================================================
 # Config
 # ===========================================================================
 DEVICE = "cpu"
-SEED   = 42
+SEED   = 1
 
-BATCH      = 64      # training batch size
-N_EPOCHS   = 300     # epochs per method
+BATCH      = 32      # training batch size
+N_EPOCHS   = 50     # epochs per method
 LR         = 3e-3    # Adam learning rate for both methods
 GRAD_CLIP  = 1.0     # gradient norm clip (applied to both)
 
 # JFB-RL specific
 EXPLORE_STD   = 0.3   # initial exploration noise standard deviation
 EXPLORE_DECAY = 0.99  # multiplicative decay per epoch
-FP_ALPHA      = 0.5   # fixed-point step size  (< 2/α_L = 2 for this problem)
-FP_MAX_ITERS  = 30    # maximum FP iterations
+
+#modified hyperparam to adapt to new loss
+FP_ALPHA      = 0.05   # fixed-point step size  (< 2/α_L = 2 for this problem)
+FP_MAX_ITERS  = 80    # maximum FP iterations
 FP_TOL        = 1e-4  # FP convergence tolerance
-U_MIN, U_MAX  = -3.0, 3.0c
+U_MIN, U_MAX  = -2.0, 2.0
+LAMBDA_U      = 0.05
+BETA_GAIN     = 0.5
 
 # Evaluation
-N_EVAL        = 256   # fresh test ICs (never seen during training)
+N_EVAL        = 128   # fresh test ICs (never seen during training)
 N_WARMUP      = 8     # jac_est warm-up rollouts for JFB-RL evaluation
 WARMUP_STD    = 0.4
 WARMUP_DECAY  = 0.6
 
 # Smoothing for loss curves in the plot
 SMOOTH_WIN = 15       # moving-average window (epochs)
-SAVE_EVERY = 25
+SAVE_EVERY = 10**9
 
 torch.manual_seed(SEED)
 np.random.seed(SEED)
@@ -92,14 +96,17 @@ np.random.seed(SEED)
 # ===========================================================================
 # Problem
 # ===========================================================================
-prob = VanDerPolOC_RL(
+prob = HardGainVanDerPolOC_RL(
     x10_min=1.5, x10_max=2.5,
     x20_min=-0.5, x20_max=0.5,
     batch_size=BATCH,
     t_initial=0.0, t_final=3.0, nt=60,
     alphaL=1.0, alphaG=5.0,
+    lambda_u= LAMBDA_U,
+    beta= BETA_GAIN,
     device=DEVICE,
 )
+
 print(f"Problem  : {prob.oc_problem_name}")
 print(f"State    : {prob.state_dim}-D  |  Control: {prob.control_dim}-D")
 print(f"Horizon  : T={prob.t_final}, nt={prob.nt}, h={prob.h:.3f}")
@@ -189,7 +196,7 @@ env = AnalyticalEnvironment(
     device=DEVICE,
 )
 
-out_dir = os.path.join(_ROOT, "results", "VanDerPolOC_RL")
+out_dir = os.path.join(_ROOT, "results", "HardGainVanDerPolOC_RL", f"seed_{SEED}")
 ckpt_dir = os.path.join(out_dir, "checkpoints")
 os.makedirs(ckpt_dir, exist_ok=True)
 
@@ -231,7 +238,7 @@ opt_mlp = torch.optim.Adam(mlp.parameters(), lr=LR)
 # Training helper — Autodiff-BPTT step
 # ===========================================================================
 
-def autodiff_step(policy: MLPPolicy, prob: VanDerPolOC_RL, opt) -> dict:
+def autodiff_step(policy: MLPPolicy, prob: HardGainVanDerPolOC_RL, opt) -> dict:
     """One BPTT training step — differentiable Euler rollout."""
     policy.train()
     opt.zero_grad()
@@ -347,7 +354,7 @@ hist_jfb_rls = train_jfb_variant(
     n_epochs=N_EPOCHS,
     exploration_std0=EXPLORE_STD,
     exploration_decay=EXPLORE_DECAY,
-    ckpt_prefix="jfb_rl_rls",
+    ckpt_prefix=None,
 )
 
 # =======================================================================
@@ -398,9 +405,9 @@ print("-" * 60)
 # Save checkpoints
 # ===========================================================================
 
-torch.save(inn_rls.state_dict(),     os.path.join(ckpt_dir, "jfb_rl_rls.pth"))
-torch.save(inn_oracle.state_dict(),  os.path.join(ckpt_dir, "jfb_rl_oracle.pth"))
-torch.save(mlp.state_dict(),         os.path.join(ckpt_dir, "autodiff.pth"))
+torch.save(inn_rls.state_dict(),     os.path.join(ckpt_dir, "hard_jfb_rl_rls.pth"))
+torch.save(inn_oracle.state_dict(),  os.path.join(ckpt_dir, "hard_jfb_rl_oracle.pth"))
+torch.save(mlp.state_dict(),         os.path.join(ckpt_dir, "hard_autodiff.pth"))
 print(f"Checkpoints saved to {ckpt_dir}")
 
 # ===========================================================================
@@ -607,7 +614,7 @@ gap_oracle_ad_pct = 100.0 * gap_oracle_ad / cost_ad.mean()
 
 fig, axes = plt.subplots(2, 2, figsize=(14, 9))
 fig.suptitle(
-    "Van der Pol stabilisation — RLS-JFB vs Oracle-JFB vs Autodiff-BPTT\n"
+    "Hard Gain Van der Pol stabilisation — RLS-JFB vs Oracle-JFB vs Autodiff-BPTT\n"
     f"N = {N_EVAL} fresh ICs | "
     f"RLS = {cost_rls.mean():.3f}, "
     f"Oracle = {cost_oracle.mean():.3f}, "
@@ -746,7 +753,7 @@ ax.grid(True, ls="--", alpha=0.4)
 
 plt.tight_layout()
 
-fig_path = os.path.join(out_dir, "comparison_oracle_vs_rls.png")
+fig_path = os.path.join(out_dir, "hard_comparison_oracle_vs_rls_seed_{SEED}.png")
 plt.savefig(fig_path, dpi=150, bbox_inches="tight")
 print(f"\nFigure saved → {fig_path}")
 plt.show()

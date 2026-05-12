@@ -148,6 +148,12 @@ class Phi(PNet):
     def forward(self, t, z, full_grad=False):
         """ calculating Phi(s, theta) """
         x = pad(z, [0,1,0,0], value=t) # pad z with t to get x
+        v= A VOIR
+        vx = torch.cat([v, torch.zeros_like(t)], dim=1)
+
+        u = []
+        delta = []
+        eta = []
         # assumes specific N.act as the antiderivative of tanh
         N    = self.N
         symA = torch.matmul(self.A.t(), self.A)
