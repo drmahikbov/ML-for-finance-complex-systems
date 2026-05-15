@@ -1,0 +1,201 @@
+/* Academic deck: light background, readable type, restrained motion */
+
+:root {
+  --slidev-theme-primary: #1a1a1a;
+  --slidev-code-background: #f4f4f5;
+}
+
+.slidev-layout {
+  color: #1a1a1a;
+  background: #fafafa;
+  letter-spacing: 0.01em;
+}
+
+.slidev-layout h1 {
+  font-weight: 600;
+  font-size: 1.85rem;
+  line-height: 1.2;
+  margin-bottom: 0.75rem;
+}
+
+.slidev-layout h2 {
+  font-weight: 600;
+  font-size: 1.35rem;
+  margin-bottom: 0.65rem;
+}
+
+.slidev-layout ul,
+.slidev-layout ol {
+  line-height: 1.45;
+  font-size: 1.05rem;
+}
+
+.slidev-layout li {
+  margin: 0.35em 0;
+}
+
+/* Larger display math */
+.slidev-layout .katex-display {
+  font-size: 1.12em;
+  margin: 0.85em 0;
+}
+
+/* Slightly more breathing room around slides */
+.slidev-page {
+  padding: 2rem 2.5rem;
+}
+
+/* Disable flashy transitions globally */
+.slidev-vclick-target {
+  transition: opacity 0.15s ease;
+}
+
+/* Paper reference under title — slightly softened */
+.slidev-layout em.paper-ref {
+  display: block;
+  margin-top: 0.35rem;
+  max-width: 42rem;
+  line-height: 1.35;
+  font-size: 0.92em;
+  opacity: 0.78;
+  color: inherit;
+}
+
+/* OC training pipeline card (see components/PipelineBox.vue) */
+.slidev-layout .pipeline-box.pipeline-box--unified {
+  margin-top: 0.75rem;
+  width: 100%;
+  padding: 0.65rem 1rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  background: #f1f5f9;
+  color: #334155;
+  text-align: center;
+  line-height: 1.45;
+  font-size: 0.9rem;
+}
+
+.slidev-layout .pipeline-box--unified .pipeline-box__equation .katex-display,
+.slidev-layout .pipeline-box--unified .pipeline-box__equation p {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+}
+
+.slidev-layout .pipeline-box--unified .pipeline-box__equation .katex {
+  font-size: 0.98em;
+}
+
+.slidev-layout .pipeline-box__title {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.72;
+  margin-bottom: 0.45rem;
+}
+
+/* Pseudocode algorithm box — #0f2841 ocean panel, #fac05e keywords */
+.slidev-layout pre.algo-box {
+  display: block;
+  margin: 0.9rem auto;
+  padding: 1rem 1.25rem;
+  max-width: 56rem;
+  background: #0f2841;
+  color: #d4e4f2;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.5rem;
+  box-shadow: 0 2px 10px rgba(5, 20, 40, 0.45);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.slidev-layout pre.algo-box code {
+  background: transparent;
+  color: #d4e4f2;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 0;
+}
+
+.slidev-layout pre.algo-box .algo-ln {
+  display: inline-block;
+  width: 2.25rem;
+  text-align: right;
+  color: rgba(212, 228, 242, 0.45);
+  user-select: none;
+  margin-right: 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.slidev-layout pre.algo-box .algo-kw {
+  color: #fac05e;
+  font-weight: 600;
+}
+
+.slidev-layout pre.algo-box .algo-math,
+.slidev-layout pre.algo-box .algo-id {
+  color: #7dd3fc;
+  font-weight: 500;
+}
+
+.slidev-layout pre.algo-box .algo-cm {
+  color: rgba(212, 228, 242, 0.55);
+  font-style: italic;
+}
+
+
+
+
+
+
+
+
+/* Hide built-in <Toc /> (slide outline) so it does not overlay slide content in play/presenter views.
+   Duplicated in global-bottom.vue + empty components/Toc.vue override.
+   Broad selectors: theme updates or nested DOM must not resurrect the panel. */
+   html .slidev-toc,
+   html .slidev-toc-list,
+   html ol.slidev-toc-list,
+   html .slidev-toc-item,
+   .slidev-layout .slidev-toc,
+   .slidev-page .slidev-toc,
+   #page-root .slidev-toc {
+     display: none !important;
+     visibility: hidden !important;
+     width: 0 !important;
+     height: 0 !important;
+     max-width: 0 !important;
+     max-height: 0 !important;
+     overflow: hidden !important;
+     margin: 0 !important;
+     padding: 0 !important;
+     pointer-events: none !important;
+     position: absolute !important;
+     left: -9999px !important;
+     clip: rect(0, 0, 0, 0) !important;
+   }
+   
+   /* Slidev Goto dialog (fixed top-right): slide title list + input — can overlap slides in some browsers / states. */
+   #slidev-goto-dialog {
+     display: none !important;
+     visibility: hidden !important;
+     pointer-events: none !important;
+     opacity: 0 !important;
+     width: 0 !important;
+     height: 0 !important;
+     overflow: hidden !important;
+     clip: rect(0, 0, 0, 0) !important;
+   }
+   
+   /* Reduce global top whitespace before slide titles. */
+   .slidev-layout,
+   .slidev-layout.cover,
+   .slidev-layout.section {
+     padding-top: 1rem !important;
+   }
+   
