@@ -74,7 +74,7 @@ EXPLORE_DECAY = 0.99  # multiplicative decay per epoch
 FP_ALPHA      = 0.5   # fixed-point step size  (< 2/α_L = 2 for this problem)
 FP_MAX_ITERS  = 30    # maximum FP iterations
 FP_TOL        = 1e-4  # FP convergence tolerance
-U_MIN, U_MAX  = -3.0, 3.0c
+U_MIN, U_MAX  = -3.0, 3.0
 
 # Evaluation
 N_EVAL        = 256   # fresh test ICs (never seen during training)

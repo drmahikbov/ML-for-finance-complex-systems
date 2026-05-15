@@ -240,7 +240,7 @@ def build_rollout_database():
 
     for ckpt_path in ckpt_paths:
         epoch = extract_epoch(ckpt_path)
-        print(f"Préparation rollout epoch {epoch:04d}...")
+        print(f"Preparing rollout epoch {epoch:04d}...")
 
         policy = make_jfb_policy()
         policy.load_state_dict(torch.load(ckpt_path, map_location=DEVICE))
@@ -282,7 +282,7 @@ def main():
     ax_phase = axes[1]
 
     # ---------------- Left panel: "physical" view ----------------
-    ax_phys.set_title("Vue physique simplifiée")
+    ax_phys.set_title("Simplified physical view")
     ax_phys.set_xlim(-0.5, 2.8)
     ax_phys.set_ylim(-1.0, 1.0)
     ax_phys.set_aspect("equal", adjustable="box")
@@ -311,7 +311,7 @@ def main():
     )
 
     # ---------------- Right panel: phase portrait ----------------
-    ax_phase.set_title("Portrait de phase")
+    ax_phase.set_title("Phase space")
     ax_phase.set_xlim(-0.2, 2.7)
     ax_phase.set_ylim(-1.2, 0.6)
     ax_phase.grid(True, ls="--", alpha=0.3)
@@ -344,7 +344,7 @@ def main():
         epoch_text.set_text("")
         cost_text.set_text("")
         time_text.set_text("")
-        supt.set_text("Van der Pol — apprentissage de la stabilisation")
+        supt.set_text("Van der Pol — Stabilisation learning")
 
         if arrow is not None:
             arrow.remove()
@@ -399,7 +399,7 @@ def main():
         )
 
         epoch_text.set_text(f"Epoch {epoch:04d}")
-        cost_text.set_text(f"Coût du rollout = {cost:.3f}")
+        cost_text.set_text(f"Rollout cost = {cost:.3f}")
         time_text.set_text(f"t = {min(step, prob.nt) * prob.h:.2f}")
 
         # ----- Right panel -----
@@ -412,8 +412,8 @@ def main():
         current_point.set_data([x1_now], [x2_now])
 
         supt.set_text(
-            "Van der Pol — apprentissage de la stabilisation\n"
-            f"Même condition initiale | episode {ep_idx + 1}/{len(episodes)}"
+            "Van der Pol — Stabilisation learning\n"
+            f"Same initial condition | episode {ep_idx + 1}/{len(episodes)}"
         )
 
         artists = [

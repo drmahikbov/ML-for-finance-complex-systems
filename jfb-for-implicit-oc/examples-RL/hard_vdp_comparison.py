@@ -63,8 +63,8 @@ from models.Hard_VDP_RL import HardVanDerPolOC_RL
 DEVICE = "cpu"
 SEED   = 1
 
-BATCH      = 32      # training batch size
-N_EPOCHS   = 50     # epochs per method
+BATCH      = 64      # training batch size
+N_EPOCHS   = 300     # epochs per method
 LR         = 3e-3    # Adam learning rate for both methods
 GRAD_CLIP  = 1.0     # gradient norm clip (applied to both)
 
@@ -88,7 +88,7 @@ WARMUP_DECAY  = 0.6
 
 # Smoothing for loss curves in the plot
 SMOOTH_WIN = 15       # moving-average window (epochs)
-SAVE_EVERY = 10**9
+SAVE_EVERY = 25
 
 torch.manual_seed(SEED)
 np.random.seed(SEED)
