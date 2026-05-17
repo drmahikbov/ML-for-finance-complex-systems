@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from pickle import FALSE
 import sys
 from typing import Any
 
@@ -279,7 +280,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gamma", type=float, default=2.0)
     p.add_argument("--epsilon", type=float, default=1e-2)
     p.add_argument("--alpha", type=float, default=3.0)
-    p.add_argument("--alphaX", type=float, default=1.0)
     p.add_argument("--q0-min", type=float, nargs="+", default=[0.5])
     p.add_argument("--q0-max", type=float, nargs="+", default=[1.5])
     p.add_argument("--S0",     type=float, nargs="+", default=[1.0])
@@ -399,7 +399,6 @@ def build_problem(args: argparse.Namespace, device: str) -> LiquidationPortfolio
         gamma=args.gamma,
         epsilon=args.epsilon,
         alpha=args.alpha,
-        alphaX=args.alphaX,
         q0_min=tuple(q0_min),
         q0_max=tuple(q0_max),
         S0=tuple(S0),
@@ -1100,7 +1099,7 @@ def main() -> None:
         save_path=out,
         n_show=args.n_show,
         tag=args.tag,
-        include_bvp=True,
+        include_bvp=FALSE,
     )
 
     plot_best_policy_same_axes(
@@ -1112,7 +1111,7 @@ def main() -> None:
             f"best_policy_same_axes_{args.tag}.png",
         ),
         label="JFB best policy",
-        include_bvp=True,
+        include_bvp=FALSE,
         path_index=0,
     )
 
