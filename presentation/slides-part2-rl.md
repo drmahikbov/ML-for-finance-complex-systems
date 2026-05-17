@@ -100,87 +100,35 @@ These replace the missing analytical derivatives of the dynamics.
 
 ---
 
-## 2.5. On-trajectory Jacobian estimation
-
-Around the reference trajectory, perturb the controls:
-
-$$ u^{(i)}_{0:N-1} = \bar u_{0:N-1} + \delta u^{(i)}, \qquad \delta u^{(i)}\sim \mathcal N(0,\sigma^2 I).$$
-
-
-The first-order expansion gives
+## 2.5. Off-trajectory / RLS Jacobian estimation
+**First-order Taylor expansion of the unknown dynamics** around a reference $(\bar z_t, \bar u_t)$:
 
 $$
-\Delta z^{(i)}_{k+1}
-\approx
-A_k^\top \Delta z^{(i)}_k
-+
-B_k^\top \Delta u^{(i)}_k,
-$$
-
-with
-
-$$
-\Delta z^{(i)}_k=z^{(i)}_k-\bar z_k,
+z_{t+1} \approx A_t z_t + B_t u_t + c_t = F_t\, x_t,
 \qquad
-\Delta u^{(i)}_k=u^{(i)}_k-\bar u_k.
+F_t = [\,A_t \ \ B_t \ \ c_t\,],
+\qquad
+x_t = \begin{bmatrix} z_t \\ u_t \\ 1 \end{bmatrix},
 $$
 
-Estimate $A_k,B_k$ by least squares:
-
-$$
-(A_k,B_k)= \arg\min_{A,B} \sum_{i=1}^M \left\| A^\top \Delta z^{(i)}_k + B^\top \Delta u^{(i)}_k -
-\Delta z^{(i)}_{k+1}
-\right\|^2.
-$$
-
----
-
-## 2.6. Off-trajectory / RLS Jacobian estimation
-
-A more sample-efficient alternative is recursive least squares.
-
-Use the augmented regressor
-
-$$
-\zeta_t^{(k)} =
-\begin{bmatrix}
-x_t^{(k)}\\
-u_t^{(k)}\\
-1
-\end{bmatrix},
-$$
-
-and update
+with $A_t = \nabla_z f_t$, $B_t = \nabla_u f_t$, and the "1" absorbing the affine offset $c_t$. RLS thus estimates the local **Jacobians of the dynamics** directly from rollouts:
 
 $$
 Q_t^{(k)} =
 \alpha_{\mathrm{rls}} Q_t^{(k-1)}
-+
-(1-\alpha_{\mathrm{rls}})q_0 I
-+
-\zeta_t^{(k)}(\zeta_t^{(k)})^\top,
++ (1-\alpha_{\mathrm{rls}})q_0 I
++ x_t^{(k)}(x_t^{(k)})^\top,
 $$
 
 $$
-F_t^{(k)} = F_t^{(k-1)} + \left(Q_t^{(k)}\right)^{-1} \zeta_t^{(k)} \left(
-x_{t+1}^{(k)} -
-F_t^{(k-1)}\zeta_t^{(k)}
-\right)^\top.
+F_t^{(k)} = F_t^{(k-1)} + \left(Q_t^{(k)}\right)^{-1} x_t^{(k)} \left(z_{t+1}^{(k)} - F_t^{(k-1)} x_t^{(k)}\right)^\top.
 $$
 
-where
-
-$$
-F_t=[A_t^\top \ B_t^\top \ c_t].
-$$
-
-- $t$ = time index inside a trajectory.
-- $k$ = rollout / update index.
+- $t$ = time index inside a trajectory, $k$ = rollout index.
 - Works best when successive rollouts remain locally informative.
-
 ---
 
-## 2.7. Local linear transition model
+## 2.6. Local linear transition model
 
 Both estimation methods produce a local model
 
@@ -209,7 +157,7 @@ $$
 
 ---
 
-## 2.8. Estimated Hamiltonian
+## 2.7. Estimated Hamiltonian
 
 Define the estimated continuous-time vector field
 
@@ -242,7 +190,7 @@ $$
 
 ---
 
-## 2.9. Key simplification
+## 2.8. Key simplification
 
 The control-gradient of the estimated Hamiltonian is
 
@@ -269,65 +217,7 @@ $$
 
 ---
 
-## 2.10. Discrete adjoint with estimated dynamics
-
-The data-driven adjoint is computed backward:
-
-$$
-p_N=\nabla G(\bar z_N),
-$$
-
-$$
-p_k =
-A_k^\top p_{k+1}
-+
-\Delta t\,\nabla_z L(t_k,\bar z_k,\bar u_k),
-\qquad
-k=N-1,\dots,0.
-$$
-
-Interpretation:
-
-$$
-A_k^\top p_{k+1} =
-\text{future sensitivity propagated through the dynamics},
-$$
-
-$$
-\Delta t\,\nabla_z L =
-\text{instantaneous state-cost sensitivity}.
-$$
-
----
-
-## 2.11. Two costates in the pipeline
-
-Inside the fixed-point operator, we use the value-gradient costate:
-
-$$
-p_\theta(t_k,z_k) =
-\nabla_z \phi_\theta(t_k,z_k).
-$$
-
-For the gradient computation, we also use the trajectory-based costate:
-
-$$
-\widehat p_k =
-A_k^\top \widehat p_{k+1}
-+
-\Delta t\,\nabla_z L(t_k,\bar z_k,\bar u_k).
-$$
-
-So:
-
-| Role | Costate used |
-|---|---|
-| Compute implicit control | $\nabla_z\phi_\theta(t_k,z_k)$ |
-| Compute descent direction | $\widehat p_k$ from backward adjoint recursion |
-
----
-
-## 2.12. JFB gradient with estimated dynamics
+## 2.9. JFB gradient with estimated dynamics
 
 The exact gradient has the structure
 
@@ -359,7 +249,7 @@ $$
 
 ---
 
-## 2.13. Track A gradient actually used
+## 2.10. Gradient actually used
 
 We replace
 
@@ -397,180 +287,70 @@ This is the central training formula of the RL extension.
 
 ---
 
-## 2.14. Algorithmic summary
+## 2.11. Algorithmic summary
 
-For each epoch:
-
-1. Sample initial condition
-
-$$
-x\sim \rho.
-$$
-
-2. Forward rollout in the environment:
-
-$$
-z_{k+1}=F(t_k,z_k,u_k).
-$$
-
-3. Compute controls by the implicit fixed point:
-
-$$
-u_k =
-\widehat T_{\theta,k}(u_k;z_k).
-$$
-
-4. Update Jacobian estimates:
-
-$$
-A_k,\ B_k.
-$$
-
-5. Backward adjoint pass:
-
-$$
-p_k=A_k^\top p_{k+1}+\Delta t\,\nabla_z L.
-$$
-
-6. JFB update:
-
-$$
-\theta
-\leftarrow
-\theta -
-\eta
-\widehat{\frac{dJ_x}{d\theta}}.
-$$
+<pre v-pre class="algo-box"><code><span class="algo-line-muted"><span class="algo-ln"> 1:</span>  <span class="algo-kw">Initialize</span> networks with parameters <span class="algo-math">θ</span>, RLS estimates <span class="algo-math">{F_k, Q_k}</span></span>
+<span class="algo-line-muted"><span class="algo-ln"> 2:</span>  <span class="algo-kw">for</span> iteration = 1, 2, … <span class="algo-kw">do</span></span>
+<span class="algo-line-muted"><span class="algo-ln"> 3:</span>      Sample a batch of initial states <span class="algo-math">{x_i} ∼ ρ</span></span>
+<span class="algo-line-muted"><span class="algo-ln"> 4:</span>      <span class="algo-kw">for</span> each trajectory <span class="algo-kw">do</span></span>
+<span class="algo-ln"> 5:</span>         <span class="algo-kw">for</span> <span class="algo-math">k</span> = 0, …, <span class="algo-math">N_t − 1</span> <span class="algo-kw">do</span>
+<span class="algo-ln"> 6:</span>              INN solves fixed point eq for optimal <span class="algo-math">u_k = T̂_{θ,k}(u_k; z_k)</span>  <span class="algo-cm"># K detached + K′ on-graph</span>
+<span class="algo-ln"> 7:</span>              Rollout in the environment <span class="algo-math">z_{k+1} = F(t_k, z_k, u_k)</span>
+<span class="algo-ln"> 8:</span>              RLS update of local Jacobians <span class="algo-math">A_k, B_k</span> from <span class="algo-math">(z_k, u_k, z_{k+1})</span>
+<span class="algo-ln"> 9:</span>         <span class="algo-kw">end for</span>
+<span class="algo-ln">10:</span>         Backward adjoint pass <span class="algo-math">p_k = A_k^⊤ p_{k+1} + Δt ∇_z L</span>
+<span class="algo-line-muted"><span class="algo-ln">11:</span>      <span class="algo-kw">end for</span></span>
+<span class="algo-line-muted"><span class="algo-ln">12:</span>      JFB update <span class="algo-math">θ ← θ − η · d̂J_x/dθ</span></span>
+<span class="algo-line-muted"><span class="algo-ln">13:</span>  <span class="algo-kw">end for</span></span>
+</code></pre>
 
 ---
 
-## 2.15. Sources of error
+## 2.12. Van der Pol oscillator — control problem
 
-The estimated gradient differs from the true gradient through three terms:
+**Goal.** Learn a feedback control that stabilizes a nonlinear oscillator and drives the state to $z_{\text{target}} = (0,0)$.
 
-| Error source | Where it enters |
-|---|---|
-| $A_k-\nabla_z F_k$ | backward adjoint recursion |
-| $B_k-\nabla_u F_k$ | Hamiltonian gradient and JFB bracket |
-| JFB approximation | replaces full implicit derivative |
+**State.** $z(t) = (x_1, x_2)^\top$, with $x_1$ position-like, $x_2$ velocity-like.
 
-Full derivative:
-
-$$
-\left(
-I-\frac{\partial T_\theta}{\partial u}
-\right)^{-1}
-\frac{\partial T_\theta}{\partial\theta}
-$$
-
-JFB approximation:
-
-$$
-\frac{\partial T_\theta}{\partial\theta}.
-$$
-
----
-
-
-## 2.16. Van der Pol oscillator — control problem
-
-### Goal
-
-Learn a feedback control that **stabilizes** a nonlinear oscillator and drives the state toward
-
-$$
-z_{\text{target}} = (0,0).
-$$
-
-The state is
-
-$$
-z(t)=
-\begin{pmatrix}
-x_1(t)\\
-x_2(t)
-\end{pmatrix},
-$$
-
-where:
-
-- $x_1$ = position-like variable  
-- $x_2$ = velocity-like variable  
-
-### Dynamics
-
-The controlled Van der Pol system is
+**Controlled dynamics.**
 
 $$
 \dot x_1 = x_2,
+\qquad
+\dot x_2 = \underbrace{\mu(1-x_1^2)x_2 - x_1}_{\text{natural nonlinear dynamics}} + \underbrace{u}_{\text{external force}}.
 $$
 
-$$
-\dot x_2 = \mu(1-x_1^2)x_2 - x_1 + u.
-$$
-
-- The term $\mu(1-x_1^2)x_2 - x_1$ is the **natural nonlinear dynamics**
-- The control $u(t)$ acts like an **external force**
-
-### What is our control?
-
-$$
-u(t)\in\mathbb R
-$$
-
-It is a scalar control input chosen at each time step to counteract the natural oscillations and steer the system to the origin.
-
+**Control.** $u(t)\in\mathbb R$ — a scalar input chosen at each time step to counteract the oscillations and steer the system to the origin.
 
 ---
 
-## 2.17. Portfolio optimal control — control problem
+## 2.13. Portfolio optimal control — control problem
 
-### Goal
+**Goal.** Learn an investment policy that allocates wealth $W_t \in \mathbb R$ to a risky asset, balancing **wealth growth** against a **risk/concentration penalty**.
 
-Learn an investment policy that chooses how much wealth to allocate to a risky asset over time, while balancing:
-
-- **growth of wealth**
-- **risk / concentration penalty**
-
-The state is the wealth
+**Dynamics.**
 
 $$
-W_t \in \mathbb R.
+\dot W = rW + \pi(\mu - r)W,
 $$
 
-### Dynamics
+with $\mu$ = risky-asset drift, $r$ = risk-free rate — **both treated as unknown** in the RL setting.
 
-The wealth evolves according to
-
-$$
-\dot W = rW + \pi(\mu-r)W.
-$$
-
-- $\mu$ = drift of the risky asset  
-- $r$ = risk-free rate  
-- both are treated as **unknown** in the RL setting
-
-### Running and terminal costs
-
-We minimize
+**Objective.** Minimize
 
 $$
 \int_0^T L(t,W,\pi)\,dt + G(W_T),
-$$
-
-with
-
-$$
-L(t,W,\pi)=\lambda\left(e^{\pi^2}-1\right),
 \qquad
-G(W)=-\log\left(\frac{W}{W_{\mathrm{ref}}}\right).
+L = \lambda\!\left(e^{\pi^2}-1\right),
+\qquad
+G(W) = -\log\!\left(\tfrac{W}{W_{\mathrm{ref}}}\right).
 $$
 
-So the agent seeks high terminal wealth while penalizing overly aggressive positions.
+The agent seeks high terminal wealth while penalizing aggressive positions.
 
 ---
 
-## 2.21. Van der Pol — learned control vs Oracle (RL)
+## 2.14. Van der Pol — learned control vs Oracle (RL)
 
 Runs from `examples-RL/vanderpol_comparison.py` / `VanDerPolOC_RL`  
 oracle vs JFB–RL / RLS-style training.
@@ -579,7 +359,7 @@ oracle vs JFB–RL / RLS-style training.
 
 ---
 
-## 2.22. Portfolio OC — RL training (JFB–RL / RLS)
+## 2.15. Portfolio OC — RL training (JFB–RL / RLS)
 
 Artifacts from `examples-RL/portfolio_optimization_RL.py` and `PortfolioOC_RL` results  
 same run tag: `JFB-RL_RLS_20260515_180609`.
@@ -598,7 +378,7 @@ same run tag: `JFB-RL_RLS_20260515_180609`.
 
 ---
 
-## 2.23. Practical challenges
+## 2.16. Practical challenges
 
 - **Locality of RLS:** old rollouts may be misleading if they are far from the current trajectory.
 - **Jacobian warm-up:** early $A_k,B_k$ estimates may be noisy.
@@ -620,7 +400,7 @@ and fixed-point residuals.
 
 ---
 
-## 2.24. Outlook
+## 2.17. Outlook
 
 The extension keeps the Gelphman structure:
 

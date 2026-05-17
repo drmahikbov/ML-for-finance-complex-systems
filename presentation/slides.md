@@ -401,18 +401,18 @@ Speaker: cite experiment settings briefly; emphasize agreement with deterministi
 
 ## 1.8. Results *(continued)*
 
-**Plate B** · training dynamics and rollouts $(\phi_\theta, u_\theta^\star)$
+**Plate B** · training dynamics: loss versus work units, memory versus epochs ($(\phi_\theta, u_\theta^\star)$ rollouts optional in remaining slots).
 
 <div class="results-grid">
 
 <div class="plot-slot">
-<div class="plot-slot__label">Plot E</div>
-<span>Training loss / Bellman surrogate</span>
+<div class="plot-slot__label">Plot E · loss</div>
+<img src="./images/loss-vs-work.png" alt="Loss versus work units (log–log)." />
 </div>
 
 <div class="plot-slot">
-<div class="plot-slot__label">Plot F</div>
-<span>Learning curves (subsample)</span>
+<div class="plot-slot__label">Plot F · memory</div>
+<img src="./images/mem-vs-epochs.png" alt="CPU memory versus training epoch." />
 </div>
 
 <div class="plot-slot">
@@ -428,7 +428,7 @@ Speaker: cite experiment settings briefly; emphasize agreement with deterministi
 </div>
 
 <!--
-Example: ../jfb-for-implicit-oc/results/PortfolioOC_RL/… and VanDerPol… as needed for part 2 teaser.
+Plots E–F: `./images/loss-vs-work.png`, `./images/mem-vs-epochs.png`. Optional: ../jfb-for-implicit-oc/results/… for rollouts.
 -->
 
 ---
@@ -445,18 +445,16 @@ $$
 \mathrm{d}S = -\kappa u\,\mathrm{d}t + \textcolor{#cc3412}{\sigma_{\!S}(t,z)\,\mathrm{d}W_t},\qquad
 \mathrm{d}X = \bigl(Su - \eta\,|u|^\gamma\bigr)\,\mathrm{d}t
 $$
-<br>
+
+
 $$
-\partial_t \phi_\theta + \max_u \left[
-L + \nabla_z \phi_\theta^\top f + \tfrac{1}{2}\operatorname{Tr}\bigl(\sigma \sigma^\top \nabla_{zz}^2 \phi_\theta\bigr)
-\right] = 0
+\partial_t \phi_\theta + \max_u \left[ L + \nabla_z \phi_\theta^\top f + \tfrac{1}{2}\operatorname{Tr}\bigl(\sigma \sigma^\top \nabla^2_{z} \phi_\theta\bigr) \right] = 0
 $$
 
 
 </div>
 
-
-
+<div class="stoch-costate-equation">
 
 $$
 \mathrm{d}p_t
@@ -466,12 +464,12 @@ $$
 p(T)=\nabla_z G(z^{\star}_T).
 $$
 
-If $\Sigma=\Sigma(t,z,u)$ **depends on** $u$, the $\nabla_u \mathcal{H}=0$ characterization gains **explicit** diffusion–control coupling (open angles: Hessian/trace estimation variance, stochastic contractivity of $T_\theta$).
+</div>
+
+$\sigma=\sigma(t,z,u)$ **depends on** $u$ $\Rightarrow$ $\nabla_u \mathcal{H}=0$ equation gains **explicit** diffusion–control coupling
 <!--
 This is the forward-looking slide: stochastic HJB adds a trace term involving the Hessian of $\phi_\theta$. For neural $\phi_\theta$, that raises questions of variance and stability. Control-dependent diffusion couples into the implicit first-order condition for u, altering T_theta. Research questions include efficient JVP/HVP schemes, sample-based pathwise losses, and whether the inner map remains well-posed / contractive after discretization.
 -->
-
----
 
 ---
 
@@ -490,7 +488,7 @@ $$
 <span class="algo-line-muted"><span class="algo-ln"> 3:</span>      Sample a batch of initial states <span class="algo-math">{x_i} ∼ ρ</span></span>
 <span class="algo-line-muted"><span class="algo-ln"> 4:</span>      <span class="algo-kw">for</span> each trajectory <span class="algo-kw">do</span></span>
 <span class="algo-ln"> 5:</span>         <span class="algo-kw">for</span> <span class="algo-math">k</span> = 0, …, <span class="algo-math">N_t − 1</span> <span class="algo-kw">do</span>
-<span class="algo-ln"> 6:</span>              Compute grad of the value function <span class="algo-math">p ← ∇_z φ_θ (t_k, z)</span> <span class="algo-cm"># discrete adjoint</span>
+<span class="algo-ln"> 6:</span>              Compute grad of the value function <span class="algo-math">p ← ∇_z φ_θ (t_k, z)</span><span class="algo-math-red">,  p' ← ∇²<sub>zz</sub> φ_θ (t_k, z)</span>
 <span class="algo-ln"> 7:</span>              INN solves fixed point eq for optimal <span class="algo-math">u</span>  <span class="algo-cm"># K steps detached, then K′ steps on-graph</span>
 <span class="algo-ln"> 8:</span>              Increase running loss and evole state <span class="algo-math">z</span>
 <span class="algo-ln"> 9:</span>         <span class="algo-kw">end for</span>
@@ -501,10 +499,6 @@ $$
 <span class="algo-line-muted"><span class="algo-ln">14:</span>  <span class="algo-kw">end for</span></span>
 </code></pre>
 
-
-
-
-- Gradient flows **only** through the **tracked tail** of length $K'$ — not through the $K$-step convergence loop or the state transitions
 
 
 <!--

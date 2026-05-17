@@ -194,6 +194,15 @@
   margin: 0.35rem 0 0 !important;
 }
 
+/* BSDE display under stochastic equiv box — separate wrapper avoids Vue/KaTeX parse glitch */
+.slidev-layout .stoch-costate-equation {
+  margin-top: 0.35rem;
+}
+
+.slidev-layout .stoch-costate-equation .katex-display {
+  margin: 0.35rem 0 0 !important;
+}
+
 /* Full-opacity variant (e.g. §1.9 stochastic box with coloured diffusion) */
 .slidev-layout #stochastic-equiv-box.equiv-box {
   opacity: 1;
@@ -300,6 +309,12 @@
 .slidev-layout pre.algo-box .algo-cm {
   color: rgba(212, 228, 242, 0.55);
   font-style: italic;
+}
+
+/* Hessian / stochastic adjunct line — stands out on dark panel */
+.slidev-layout pre.algo-box .algo-math-red {
+  color: #f87171;
+  font-weight: 500;
 }
 
 /* De-emphasise scaffolding lines (batch / bookkeeping) vs inner time-step loop */
