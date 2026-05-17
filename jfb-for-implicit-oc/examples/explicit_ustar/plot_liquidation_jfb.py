@@ -53,6 +53,10 @@ from typing import Any
 import numpy as np
 import torch
 
+import time
+import pandas as pd
+import matplotlib.pyplot as plt
+
 # Local imports: script may be run from project root or this directory.
 # core/ and models/ still use flat imports, so they need to be on sys.path
 # in addition to the package root (which is needed for `core.paths`, etc.).
@@ -275,6 +279,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gamma", type=float, default=2.0)
     p.add_argument("--epsilon", type=float, default=1e-2)
     p.add_argument("--alpha", type=float, default=3.0)
+    p.add_argument("--alphaX", type=float, default=1.0)
     p.add_argument("--q0-min", type=float, nargs="+", default=[0.5])
     p.add_argument("--q0-max", type=float, nargs="+", default=[1.5])
     p.add_argument("--S0",     type=float, nargs="+", default=[1.0])
@@ -349,19 +354,26 @@ def resolve_liquidation_fp_alpha(prob: Any, fp_alpha: float | str) -> float:
     return float(fp_alpha)
 
 
-def _broadcast(values: list[float], n_assets: int, name: str) -> list[float]:
-    """Broadcast a CLI per-asset list to length ``n_assets``.
+def _broadcast(values: list[float], n_assets: int, name: str):
+    """Broadcast CLI input.
 
-    A single scalar is repeated; a length-``n_assets`` list passes through;
-    anything else is rejected.
+    Accepts:
+        - 1 value: scalar
+        - n values: vector
+        - n*n values: full matrix, row-wise
     """
     if len(values) == 1:
         return values * n_assets
+
     if len(values) == n_assets:
         return list(values)
+
+    if len(values) == n_assets * n_assets:
+        return np.asarray(values, dtype=float).reshape(n_assets, n_assets)
+
     raise SystemExit(
-        f"--{name} expected 1 or {n_assets} values (n_assets={n_assets}); "
-        f"got {len(values)}: {values}"
+        f"--{name} expected 1, {n_assets}, or {n_assets*n_assets} values "
+        f"(n_assets={n_assets}); got {len(values)}: {values}"
     )
 
 
@@ -381,12 +393,13 @@ def build_problem(args: argparse.Namespace, device: str) -> LiquidationPortfolio
         t_final=args.t_final,
         nt=args.nt,
         n_assets=n,
-        sigma=tuple(sigma),
-        kappa=tuple(kappa),
+        sigma=sigma,
+        kappa=kappa,
         eta=tuple(eta),
         gamma=args.gamma,
         epsilon=args.epsilon,
         alpha=args.alpha,
+        alphaX=args.alphaX,
         q0_min=tuple(q0_min),
         q0_max=tuple(q0_max),
         S0=tuple(S0),
@@ -439,9 +452,9 @@ def _train_or_load(
     *,
     full_ad: bool,
     trainer_tag: str,
-) -> ImplicitNetOC:
+) -> tuple[ImplicitNetOC, OptimalControlTrainer | None]:
     """Build a fresh ImplicitNetOC and either load weights from
-    ``args.checkpoint`` or train from scratch.
+    ``args.checkpoint`` or train from scratch and return the trained policy and trainer.
 
     Parameters
     ----------
@@ -476,7 +489,7 @@ def _train_or_load(
         inn.load_state_dict(state, strict=True)
         print(f"Loaded policy weights from: {ckpt}")
         inn.eval()
-        return inn
+        return inn, None
 
     if args.train_epochs <= 0:
         raise SystemExit("Provide --checkpoint or set --train-epochs > 0.")
@@ -520,7 +533,7 @@ def _train_or_load(
     # Reset the flag so subsequent rollouts/eval are deterministic.
     prob.track_all_fp_iters = False
     inn.eval()
-    return inn
+    return inn, trainer
 
 
 def _plot_multiasset_rollout(
@@ -531,43 +544,82 @@ def _plot_multiasset_rollout(
     n_show: int,
     title: str | None = None,
     tag: str | None = None,
+    include_bvp: bool = True,
 ) -> None:
-    """Multi-asset analogue of :meth:`LiquidationBenchmark.plot_comparison`.
+    """Plot multi-asset liquidation rollouts.
 
-    Rolls out each labeled policy with :class:`JFBPolicyRollout` for the
-    first ``n_show`` initial conditions and overlays them on the
-    ``liquidation_panels(n_assets)`` grid. No exact reference is drawn:
-    the closed-form BVP solver only handles the single-asset case, so for
-    ``n_assets > 1`` we fall back to JFB-only.
+    Shows JFB policies and, when gamma=2, the exact BVP reference.
     """
     from dataclasses import replace as _dc_replace
+
     palette = ("#d6604d", "#4daf4a", "#984ea3", "#ff7f00", "#377eb8")
     batch = min(z0_batch.shape[0], n_show)
     z0 = z0_batch[:batch].to(prob.device)
+
     trajectories = []
+
+    # Add exact BVP reference. Only valid for gamma=2.
+    if include_bvp and abs(float(prob.gamma) - 2.0) < 1e-6:
+        bvp_solver = AlmgrenChrissBVPSolver(prob)
+
+        for b in range(batch):
+            tr_bvp = bvp_solver.solve(z0[b])
+
+            tr_bvp = _dc_replace(
+                tr_bvp,
+                label="Exact BVP" if b == 0 else None,
+                style={
+                    "color": "#2166ac",
+                    "ls": "--",
+                    "lw": 2.0,
+                    "alpha": 0.85,
+                },
+            )
+
+            trajectories.append(tr_bvp)
+
+    elif include_bvp:
+        print("[info] Exact BVP skipped: requires gamma=2.")
+
+    # Add JFB / learned policies.
     for i, (label, pol) in enumerate(policies.items()):
         color = palette[i % len(palette)]
         roller = JFBPolicyRollout(prob, pol)
+
         for b in range(batch):
             tr = roller.solve(z0[b])
+
             tr = _dc_replace(
                 tr,
                 label=label if b == 0 else None,
-                style={"color": color, "lw": 2.0, "alpha": 0.75},
+                style={
+                    "color": color,
+                    "lw": 2.0,
+                    "alpha": 0.75,
+                },
             )
+
             trajectories.append(tr)
 
+    # Build standard liquidation panels:
+    # q_i(t), u_i(t), S_i(t), and shared X(t).
     panels = liquidation_panels(prob.n_assets)
     ncols = 3 if prob.n_assets > 1 else 2
+
     if title is None:
+        has_bvp = include_bvp and abs(float(prob.gamma) - 2.0) < 1e-6
         tag_str = f"  [{tag}]" if tag else ""
         title = (
             f"Liquidation portfolio (n_assets={prob.n_assets}) — "
-            f"{' vs '.join(policies.keys())}  "
+            f"{' vs '.join(policies.keys())}"
+            f"{' vs Exact BVP' if has_bvp else ''} "
             f"(γ={prob.gamma:.1f}){tag_str}"
         )
+
     BenchmarkPlotter(panels, ncols=ncols).plot(
-        trajectories, save_path=save_path, title=title,
+        trajectories,
+        save_path=save_path,
+        title=title,
     )
 
 
@@ -631,6 +683,295 @@ def _write_diagnostics(
     )
     print(f"Diagnostics figure written to: {os.path.abspath(diag_out)}")
 
+def plot_jfb_vs_ad_training_curves(
+    trainer_jfb: OptimalControlTrainer | None,
+    trainer_ad: OptimalControlTrainer | None,
+    save_path: str,
+) -> None:
+    """Paper-style comparison plot: JFB vs AD.
+
+    Panels:
+        1. Loss vs Epoch
+        2. Loss vs Time
+        3. Loss vs Work Units
+        4. Memory vs Epoch
+    """
+    if trainer_jfb is None or trainer_ad is None:
+        print("[warn] Missing trainer_jfb or trainer_ad; skipping comparison plot.")
+        return
+
+    hist_jfb_path = trainer_jfb.run_io.history_path()
+    hist_ad_path = trainer_ad.run_io.history_path()
+
+    if not os.path.isfile(hist_jfb_path):
+        print(f"[warn] JFB history not found: {hist_jfb_path}")
+        return
+
+    if not os.path.isfile(hist_ad_path):
+        print(f"[warn] AD history not found: {hist_ad_path}")
+        return
+
+    df_jfb = pd.read_csv(hist_jfb_path)
+    df_ad = pd.read_csv(hist_ad_path)
+
+    # Cumulative training time in minutes.
+    df_jfb["cumulative_time_min"] = df_jfb["time_per_epoch"].cumsum() / 60.0
+    df_ad["cumulative_time_min"] = df_ad["time_per_epoch"].cumsum() / 60.0
+
+    # Cumulative work units.
+    df_jfb["cumulative_work_units"] = df_jfb["work_units"].cumsum()
+    df_ad["cumulative_work_units"] = df_ad["work_units"].cumsum()
+
+    # Prefer GPU memory if available, otherwise CPU memory.
+    if "gpu_max_memory_MB" in df_jfb.columns and df_jfb["gpu_max_memory_MB"].max() > 0:
+        mem_col = "gpu_max_memory_MB"
+        mem_label = "GPU Memory (MB)"
+    else:
+        mem_col = "max_memory_MB"
+        mem_label = "CPU Memory (MB)"
+
+    fig, axes = plt.subplots(2, 2, figsize=(11, 7))
+
+    # Loss vs Epoch
+    axes[0, 0].plot(df_jfb["epoch"], df_jfb["loss"], label="JFB (ours)", linewidth=2.0)
+    axes[0, 0].plot(df_ad["epoch"], df_ad["loss"], label="AD through FP", linewidth=2.0)
+    axes[0, 0].set_title("Loss vs. Epoch")
+    axes[0, 0].set_xlabel("Epoch")
+    axes[0, 0].set_ylabel("Loss")
+    axes[0, 0].set_yscale("log")
+    axes[0, 0].grid(True, alpha=0.3)
+
+    # Loss vs Time
+    axes[0, 1].plot(df_jfb["cumulative_time_min"], df_jfb["loss"], label="JFB (ours)", linewidth=2.0)
+    axes[0, 1].plot(df_ad["cumulative_time_min"], df_ad["loss"], label="AD through FP", linewidth=2.0)
+    axes[0, 1].set_title("Loss vs. Time")
+    axes[0, 1].set_xlabel("Time (min)")
+    axes[0, 1].set_ylabel("Loss")
+    axes[0, 1].set_yscale("log")
+    axes[0, 1].grid(True, alpha=0.3)
+
+    # Loss vs Work Units
+    axes[1, 0].plot(df_jfb["cumulative_work_units"], df_jfb["loss"], label="JFB (ours)", linewidth=2.0)
+    axes[1, 0].plot(df_ad["cumulative_work_units"], df_ad["loss"], label="AD through FP", linewidth=2.0)
+    axes[1, 0].set_title("Loss vs. Work Units")
+    axes[1, 0].set_xlabel("Work Units")
+    axes[1, 0].set_ylabel("Loss")
+    axes[1, 0].set_xscale("log")
+    axes[1, 0].set_yscale("log")
+    axes[1, 0].grid(True, alpha=0.3)
+
+    # Memory vs Epoch
+    axes[1, 1].plot(df_jfb["epoch"], df_jfb[mem_col], label="JFB (ours)", linewidth=2.0)
+    axes[1, 1].plot(df_ad["epoch"], df_ad[mem_col], label="AD through FP", linewidth=2.0)
+    axes[1, 1].set_title("Memory vs. Epoch")
+    axes[1, 1].set_xlabel("Epoch")
+    axes[1, 1].set_ylabel(mem_label)
+    axes[1, 1].grid(True, alpha=0.3)
+
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=2)
+
+    fig.suptitle("JFB vs AD through fixed-point iterations")
+    fig.tight_layout(rect=[0, 0.07, 1, 0.94])
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Training comparison plot written to: {os.path.abspath(save_path)}")
+
+def plot_best_policy_same_axes(
+    prob,
+    trainer,
+    z0=None,
+    save_path=None,
+    label="Best policy",
+    include_bvp=True,
+    path_index=0,
+):
+    """
+    Reload best policy from trainer checkpoint and plot q_i, u_i, S_i, X
+    with all assets on shared axes.
+
+    Same asset = same color for policy and BVP.
+    Method difference:
+        - Best policy: solid line
+        - Exact BVP: dashed line
+    """
+    import os
+    import torch
+    import matplotlib.pyplot as plt
+    from dataclasses import replace as _dc_replace
+    from benchmarking import JFBPolicyRollout
+    from benchmarking.solvers import AlmgrenChrissBVPSolver
+
+    # Reload best checkpoint.
+    ckpt_path = trainer.run_io.policy_path()
+    if os.path.isfile(ckpt_path):
+        trainer.policy.load_state_dict(
+            torch.load(ckpt_path, map_location=prob.device, weights_only=True)
+        )
+    else:
+        print(f"[warn] Best checkpoint not found: {ckpt_path}")
+
+    trainer.policy.eval()
+
+    z0 = prob.sample_initial_condition()
+    z0_one = z0[path_index]
+
+    trajectories = []
+
+    # Exact BVP reference.
+    if include_bvp and abs(float(prob.gamma) - 2.0) < 1e-6:
+        bvp_solver = AlmgrenChrissBVPSolver(prob)
+        tr_bvp = bvp_solver.solve(z0_one)
+
+        tr_bvp = _dc_replace(
+            tr_bvp,
+            label="Exact BVP",
+            style={
+                "ls": "--",
+                "lw": 2.0,
+                "alpha": 0.85,
+            },
+        )
+        trajectories.append(tr_bvp)
+
+    # Learned best policy.
+    roller = JFBPolicyRollout(prob, trainer.policy)
+    tr_policy = roller.solve(z0_one)
+
+    tr_policy = _dc_replace(
+        tr_policy,
+        label=label,
+        style={
+            "ls": "-",
+            "lw": 2.0,
+            "alpha": 0.85,
+        },
+    )
+    trajectories.append(tr_policy)
+
+    n = prob.n_assets
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 7))
+
+    ax_q = axes[0, 0]
+    ax_u = axes[0, 1]
+    ax_S = axes[1, 0]
+    ax_X = axes[1, 1]
+
+    # One color per asset. BVP and policy use the same color for the same asset.
+    asset_colors = [
+        "#1f77b4",  # blue
+        "#ff7f0e",  # orange
+        "#2ca02c",  # green
+        "#d62728",  # red
+        "#9467bd",  # purple
+        "#8c564b",  # brown
+        "#e377c2",  # pink
+        "#7f7f7f",  # gray
+    ]
+
+    for tr in trajectories:
+        t = tr.t
+        z = tr.z
+        u = tr.u
+
+        style = tr.style or {}
+        method_ls = style.get("ls", "-")
+        lw = style.get("lw", 2.0)
+        alpha = style.get("alpha", 0.85)
+
+        q = z[:, :n]
+        S = z[:, n:2*n]
+        X = z[:, 2*n] if z.shape[1] >= 2*n + 1 else None
+
+        for i in range(n):
+            color_i = asset_colors[i % len(asset_colors)]
+
+            # Label only q panel to avoid duplicate huge legends everywhere.
+            ax_q.plot(
+                t,
+                q[:, i],
+                color=color_i,
+                linestyle=method_ls,
+                linewidth=lw,
+                alpha=alpha,
+                label=f"Asset {i+1} — {tr.label}",
+            )
+
+            ax_S.plot(
+                t,
+                S[:, i],
+                color=color_i,
+                linestyle=method_ls,
+                linewidth=lw,
+                alpha=alpha,
+            )
+
+            if u is not None:
+                ax_u.plot(
+                    t[:-1],
+                    u[:, i],
+                    color=color_i,
+                    linestyle=method_ls,
+                    linewidth=lw,
+                    alpha=alpha,
+                )
+
+        # Cash is portfolio-level, not asset-level.
+        if X is not None:
+            cash_color = "black" if tr.label == "Exact BVP" else "#d6604d"
+            ax_X.plot(
+                t,
+                X,
+                color=cash_color,
+                linestyle=method_ls,
+                linewidth=lw,
+                alpha=alpha,
+                label=tr.label,
+            )
+
+    ax_q.set_title("Inventory $q_i(t)$")
+    ax_q.set_xlabel("t")
+    ax_q.set_ylabel("q")
+    ax_q.grid(True, alpha=0.3)
+    ax_q.legend(
+    fontsize=8,
+    loc="center left",
+    bbox_to_anchor=(1.02, 0.5),
+    borderaxespad=0.0,
+)
+    ax_u.set_title("Trading rate $u_i(t)$")
+    ax_u.set_xlabel("t")
+    ax_u.set_ylabel("u")
+    ax_u.grid(True, alpha=0.3)
+
+    ax_S.set_title("Impacted price $S_i(t)$")
+    ax_S.set_xlabel("t")
+    ax_S.set_ylabel("S")
+    ax_S.grid(True, alpha=0.3)
+    ax_S.ticklabel_format(style="plain", axis="y", useOffset=False)
+
+    ax_X.set_title("Cash $X(t)$")
+    ax_X.set_xlabel("t")
+    ax_X.set_ylabel("X")
+    ax_X.grid(True, alpha=0.3)
+    ax_X.legend(fontsize=8)
+
+    fig.suptitle(f"Best policy rollout, n_assets={n}, gamma={prob.gamma:g}")
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+    if save_path is None:
+        save_path = trainer.run_io.rollout_path()
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+    print(f"Best-policy shared-axis plot written to: {os.path.abspath(save_path)}")
+
 
 def main() -> None:
     args = parse_args()
@@ -673,7 +1014,7 @@ def main() -> None:
     # we also train a second policy through full autograd.  The user's
     # ``--tag`` is preserved verbatim for the JFB run; the AD run gets an
     # internal ``-fullAD`` suffix so file artifacts don't collide.
-    inn_jfb = _train_or_load(
+    inn_jfb, trainer_jfb = _train_or_load(
         prob, args, device, full_ad=False, trainer_tag=args.tag,
     )
 
@@ -685,7 +1026,7 @@ def main() -> None:
                 "(no second AD-trained model is produced)."
             )
         else:
-            inn_ad = _train_or_load(
+            inn_ad, trainer_ad = _train_or_load(
                 prob, args, device, full_ad=True,
                 trainer_tag=f"{args.tag}-fullAD",
             )
@@ -728,39 +1069,52 @@ def main() -> None:
         policies["JFB (full AD)"] = inn_ad
         _add_learned_costate_overlays("AD", inn_ad.p_net)
 
-    if prob.n_assets == 1:
-        # Single-asset: keep the legacy 6-panel BVP-vs-JFB comparison figure.
-        # Tag is injected into the figure title for parity with the
-        # multi-asset path.
-        bench = LiquidationBenchmark(prob)
-        policy_str = "JFB" if len(policies) == 1 else " vs ".join(policies.keys())
-        bench_title = (
-            f"LiquidationPortfolio — {policy_str} vs Exact BVP  "
-            f"(γ={float(prob.gamma):.1f}, η={float(prob.eta):g}, "
-            f"κ={float(prob.kappa):.0e})  [{args.tag}]"
-        )
-        if len(policies) == 1:
-            bench.plot_comparison(inn_jfb, z0_plot, save_path=out,
-                                  n_show=args.n_show, title=bench_title)
-        else:
-            bench.plot_comparison(
-                policies, z0_plot, save_path=out, n_show=args.n_show,
-                title=bench_title,
-            )
-    else:
-        # Multi-asset: closed-form BVP solver doesn't generalise yet, so we
-        # produce a JFB-only roll-out figure with one (q_i, u_i, S_i) row
-        # per asset plus a shared X(t) panel.
-        print(
-            "[info] Multi-asset run (n_assets > 1): exact BVP reference is "
-            "single-asset only and is being skipped. The figure shows the "
-            "JFB rollout(s) on the per-asset panels."
-        )
-        _plot_multiasset_rollout(
-            prob, policies, z0_plot, save_path=out, n_show=args.n_show,
-            tag=args.tag,
-        )
-    print(f"Figure written to: {os.path.abspath(out)}")
+    # if prob.n_assets == 1:
+    #     # Single-asset: keep the legacy 6-panel BVP-vs-JFB comparison figure.
+    #     # Tag is injected into the figure title for parity with the
+    #     # multi-asset path.
+    #     bench = LiquidationBenchmark(prob)
+    #     policy_str = "JFB" if len(policies) == 1 else " vs ".join(policies.keys())
+    #     bench_title = (
+    #         f"LiquidationPortfolio — {policy_str} vs Exact BVP  "
+    #         f"(γ={float(prob.gamma):.1f}, η={float(prob.eta):g}, "
+    #         f"κ={float(prob.kappa):.0e})  [{args.tag}]"
+    #     )
+    #     if len(policies) == 1:
+    #         bench.plot_comparison(inn_jfb, z0_plot, save_path=out,
+    #                               n_show=args.n_show, title=bench_title)
+    #     else:
+    #         bench.plot_comparison(
+    #             policies, z0_plot, save_path=out, n_show=args.n_show,
+    #             title=bench_title,
+    #         )
+    print(
+        "[info] Multi-asset run: plotting JFB rollout(s)"
+        + (" with exact BVP reference." if abs(float(prob.gamma) - 2.0) < 1e-6 else ".")
+    )
+
+    _plot_multiasset_rollout(
+        prob,
+        policies,
+        z0_plot,
+        save_path=out,
+        n_show=args.n_show,
+        tag=args.tag,
+        include_bvp=True,
+    )
+
+    plot_best_policy_same_axes(
+        prob=prob,
+        trainer=trainer_jfb,
+        z0=z0_plot,
+        save_path=os.path.join(
+            results_dir(type(prob).__name__, "benchmark"),
+            f"best_policy_same_axes_{args.tag}.png",
+        ),
+        label="JFB best policy",
+        include_bvp=True,
+        path_index=0,
+    )
 
     if args.diagnostics:
         z0_diag = z0_plot[0].detach().cpu().numpy().reshape(-1)
@@ -775,6 +1129,19 @@ def main() -> None:
                 label="JFB (full AD)",
                 out_filename=f"jfb_diagnostics_{args.tag}-fullAD.png",
             )
+
+
+    if args.full_ad:
+        comparison_path = os.path.join(
+            results_dir(type(prob).__name__, "benchmark"),
+            f"training_curves_jfb_vs_ad_{args.tag}.png",
+        )
+
+        plot_jfb_vs_ad_training_curves(
+            trainer_jfb,
+            trainer_ad,
+            save_path=comparison_path,
+        )
 
 
 if __name__ == "__main__":

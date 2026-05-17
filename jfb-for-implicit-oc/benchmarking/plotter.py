@@ -254,6 +254,7 @@ def _label_ax(ax, title: str, xlabel: str, ylabel: str, fontsize: int = 10) -> N
     ax.set_ylabel(ylabel, fontsize=9)
     ax.grid(True, ls="--", alpha=0.35)
     ax.tick_params(labelsize=8)
+    ax.ticklabel_format(style="plain", axis="y", useOffset=False)
 
 
 def _add_legend(ax, fontsize: int = 8) -> None:
