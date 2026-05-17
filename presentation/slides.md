@@ -142,7 +142,6 @@ $$
 $$
 
 
-
 </div>
 
 
@@ -224,7 +223,6 @@ $$
 
 
 - Gradient flows **only** through the **tracked tail** of length $K'$ — not through the $K$-step convergence loop or the state transitions
-
 
 <!--
 Speaker note: Inner loop on **u**: many Hamiltonian-ascent steps with no graph tape, then a short **tracked** tail (length K′) so only that tail contributes to gradients in **θ** (Term I / JFB). Dynamics in **z** are stepped without differentiating through the transition. Costate **p** is whatever **∇_z φ_θ** implementation you couple into **H** — the narrative here is Pontryagin/HJB bookkeeping, not a claim about computing that gradient by reverse-mode autodiff.
