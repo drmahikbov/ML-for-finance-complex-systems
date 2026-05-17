@@ -81,44 +81,35 @@ class ReferenceSolver(ABC):
 
 
 # =============================================================================
-# Almgren-Chriss single-asset BVP solver (γ=2)
+# Almgren-Chriss Multi-asset BVP solver (γ=2) (can use n_assets=1 for single-asset)
 # =============================================================================
 
 _DEFAULT_EXACT_STYLE = {"color": "#2166ac", "ls": "--", "lw": 2.0}
 
-
 class AlmgrenChrissBVPSolver(ReferenceSolver):
-    """Closed-form reference for single-asset Almgren-Chriss liquidation.
+    """BVP reference solver for Almgren-Chriss liquidation with γ = 2.
 
-    The problem must use ``γ = 2`` (within ``1e-6``) -- the stationarity
-    condition of the Hamiltonian is linear in ``u`` in that case and the
-    resulting 4-state two-point BVP can be solved to machine precision by
-    :func:`scipy.integrate.solve_bvp`.  See the module docstring of
-    :mod:`liquidation_benchmark` for the full derivation.
+    This class now supports both:
+        - n_assets = 1: same behaviour as the original single-asset solver.
+        - n_assets > 1: diagonal multi-asset case.
 
-    Parameters
-    ----------
-    prob : LiquidationPortfolioOC or object with scalar attributes
-        Used to read ``sigma``, ``kappa``, ``eta``, ``gamma``, ``epsilon``,
-        ``alpha``, ``t_initial``, ``t_final``.
-    n_bvp_nodes : int
-        Number of collocation nodes used by :func:`scipy.integrate.solve_bvp`.
-    bvp_tol : float
-        Residual tolerance forwarded to :func:`scipy.integrate.solve_bvp`.
+    Supports:
+        - n_assets = 1
+        - n_assets > 1
+        - diagonal or full risk matrix sigma
+        - diagonal or full permanent-impact matrix kappa
 
-    Raises
-    ------
-    ValueError
-        When ``abs(prob.gamma - 2.0) >= 1e-6`` at construction time.
+    Convention:
+        - scalar/vector sigma is interpreted as volatility and squared into a covariance matrix;
+        - matrix sigma is interpreted directly as the covariance/risk matrix;
+        - scalar/vector kappa becomes diagonal impact;
+        - matrix kappa is used directly as cross-impact.
 
-    Notes
-    -----
-    The accumulated cash component ``X(t)`` is reconstructed **after** the
-    BVP is solved by trapezoidal integration of ``dX/dt = Su - η(u²+ε)``.
-    This is slightly inconsistent with the explicit-Euler rollout used for
-    the JFB policy (see :class:`JFBPolicyRollout`), which accumulates
-    ``X`` with the left-endpoint rule.  The discrepancy is small for the
-    parameter regimes currently in use and is left as-is in this refactor.
+    Internal BVP state:
+        y = [q, S, p_q, p_S]  where each block has length n_assets.
+    The returned Trajectory state is:
+        z = [q_1, ..., q_n, S_1, ..., S_n, X]
+    where X is reconstructed after solving the BVP.
     """
 
     def __init__(
@@ -131,57 +122,226 @@ class AlmgrenChrissBVPSolver(ReferenceSolver):
         self.n_bvp_nodes = n_bvp_nodes
         self.bvp_tol = bvp_tol
 
-        self.sigma = float(prob.sigma)
-        self.kappa = float(prob.kappa)
-        self.eta = float(prob.eta)
+        # Number of assets.
+        self.n_assets = int(getattr(prob, "n_assets", 1))
+
+        # The helper _as_vec accepts:
+        #   - a scalar, repeated across all assets;
+        #   - a tensor / list / array of length n_assets.
+        self.sigma = self._to_square_matrix(prob.sigma, self.n_assets, "sigma")
+        self.kappa = self._to_square_matrix(prob.kappa, self.n_assets, "kappa")
+        self.eta = self._to_asset_vector(prob.eta, self.n_assets, "eta")
+
+        # These parameters are scalar.
         self.gamma = float(prob.gamma)
         self.epsilon = float(prob.epsilon)
         self.alpha = float(prob.alpha)
         self.t0 = float(prob.t_initial)
         self.T = float(prob.t_final)
 
+        # This solver is only valid for gamma = 2 since for gamma != 2, the Hamiltonian is implicit
         if abs(self.gamma - 2.0) >= 1e-6:
             raise ValueError(
-                f"AlmgrenChrissBVPSolver requires γ=2 (±1e-6); got γ={self.gamma:.6f}."
+                f"AlmgrenChrissBVPSolver requires γ=2 (±1e-6); "
+                f"got γ={self.gamma:.6f}."
             )
+
+        # function to convert scalar or vector parameters into asset-aligned vectors of shape (n_assets,) on the correct device
+    def _to_asset_vector(self, x, n_assets, name):
+        if isinstance(x, torch.Tensor):
+            x = x.detach().cpu().numpy()
+
+        x_t = np.asarray(x, dtype=float)
+
+        if x_t.ndim == 0:
+            return np.full(n_assets, float(x_t))
+
+        x_t = x_t.reshape(-1)
+
+        if x_t.size == n_assets:
+            return x_t
+
+        raise ValueError(
+            f"{name} must be a scalar or a vector of length {n_assets}; "
+            f"got shape {x_t.shape}"
+        )
+
+    #function to convert scalar, vector, or matrix parameters into square matrices of shape (n_assets, n_assets) on the correct device
+    def _to_square_matrix(self, x, n_assets, name):
+        if isinstance(x, torch.Tensor):
+            x = x.detach().cpu().numpy()
+
+        x_t = np.asarray(x, dtype=float)
+
+        if x_t.ndim == 0:
+            if name == "sigma":
+                return float(x_t) ** 2 * np.eye(n_assets)
+            else:
+                return float(x_t) * np.eye(n_assets)
+
+        if x_t.ndim == 1:
+            x_t = x_t.reshape(-1)
+
+            if x_t.size == 1:
+                if name == "sigma":
+                    return float(x_t[0]) ** 2 * np.eye(n_assets)
+                else:
+                    return float(x_t[0]) * np.eye(n_assets)
+
+            if x_t.size == n_assets:
+                if name == "sigma":
+                    return np.diag(x_t ** 2)
+                else:
+                    return np.diag(x_t)
+
+        if x_t.ndim == 2 and x_t.shape == (n_assets, n_assets):
+            return x_t
+
+        raise ValueError(
+            f"{name} must be a scalar, a vector of length {n_assets}, "
+            f"or a square matrix of shape ({n_assets}, {n_assets}); "
+            f"got shape {x_t.shape}"
+        )
+
+    def _split_y(self, y: np.ndarray):
+        """Split the BVP state y into q, S, p_q, p_S.
+
+        solve_bvp represents the solution as a 2D array:
+            y.shape = (state_dimension, n_time_nodes)
+        The layout is:
+            y[0:n]       = q
+            y[n:2n]      = S
+            y[2n:3n]     = p_q
+            y[3n:4n]     = p_S
+            
+        Each returned block has shape (n_assets, n_time_nodes)
+        """
+        n = self.n_assets
+
+        q = y[0:n]
+        S = y[n:2*n]
+        p_q = y[2*n:3*n]
+        p_S = y[3*n:4*n]
+
+        return q, S, p_q, p_S
 
     # ------------------------------------------------------------------ #
     # Internal ODE/BC helpers                                            #
     # ------------------------------------------------------------------ #
 
-    def _u_star(self, q: np.ndarray, S: np.ndarray,
-                p_q: np.ndarray, p_S: np.ndarray) -> np.ndarray:
-        """Optimal control from the linear stationarity condition (γ=2, p_X=-1).
+    def _u_star(
+        self,
+        q: np.ndarray,
+        S: np.ndarray,
+        p_q: np.ndarray,
+        p_S: np.ndarray,
+    ) -> np.ndarray:
+        """Compute the exact optimal control u* for gamma = 2.
 
-        With Hamiltonian ``H = L + p^T f`` (the convention used everywhere in
-        this codebase, in particular in :meth:`ImplicitOC.compute_grad_H_u`),
-        ``∂H/∂u = -p_q - κ p_S + p_X S - 2 η p_X u``.  Setting this to zero
-        and using ``p_X = -1`` (since ``∂G/∂X = -1`` and ``∂H/∂X = 0``) gives
+        The reduced-state Hamiltonian is:
 
-            u* = (p_q + κ p_S + S) / (2 η).
+            H = 1/2 q^T Sigma q
+                - S^T u
+                + sum_i eta_i u_i^2
+                + p_q^T (-u)
+                + p_S^T (-diag(kappa) u)
 
-        The previous implementation returned the negative of this value,
-        which forced the BVP into a sign-flipped costate solution that
-        disagreed with the JFB Hamiltonian convention.
+        The first-order condition is:
+
+            ∂H/∂u_i = 0
+
+        which gives:
+
+            2 eta_i u_i - S_i - p_q_i - kappa_i p_S_i = 0
+
+        Therefore:
+
+            u_i* = (S_i + p_q_i + kappa_i p_S_i) / (2 eta_i)
+
+        In vectorized form, since kappa and eta are diagonal:
+
+            u* = (S + p_q + kappa * p_S) / (2 eta)
+
+        where all operations are componentwise.
+
+        Shapes:
+            S, p_q, p_S: (n_assets, n_time_nodes)
+            kappa[:, None]: (n_assets, 1)
+            eta[:, None]: (n_assets, 1)
         """
-        return (p_q + self.kappa * p_S + S) / (2.0 * self.eta)
+        cross_impact_costate = self.kappa.T @ p_S
+        return (S + p_q + cross_impact_costate) / (2.0 * self.eta[:, None])
 
     def _odes(self, t: np.ndarray, y: np.ndarray) -> np.ndarray:
-        q, S, p_q, p_S = y
-        u = self._u_star(q, S, p_q, p_S)
-        dq = -u
-        dS = -self.kappa * u
-        dp_q = -(self.sigma ** 2) * q
-        dp_S = u  # ṗ_S = -∂H/∂S = -p_X·u = +u  (since p_X = -1)
-        return np.array([dq, dS, dp_q, dp_S])
+        """ODE system for the PMP boundary value problem.
 
-    def _bc(self, ya: np.ndarray, yb: np.ndarray,
-            q0: float, S0: float) -> np.ndarray:
-        return np.array([
-            ya[0] - q0,
-            ya[1] - S0,
-            yb[2] - 2.0 * self.alpha * yb[0],
-            yb[3],
+        The internal BVP system is written in terms of:
+
+            q(t), S(t), p_q(t), p_S(t)
+
+        The dynamics are:
+
+            q_dot   = -u
+            S_dot   = -kappa * u
+            p_q_dot = -sigma^2 * q
+            p_S_dot = u
+        Returns
+        -------
+        np.ndarray (4*n_assets, n_time_nodes)
+        """
+        q, S, p_q, p_S = self._split_y(y)
+
+        # Compute the optimal control at all BVP nodes.
+        u = self._u_star(q, S, p_q, p_S)
+
+        # State dynamics.
+        dq = -u
+        dS = -self.kappa @ u
+
+        # Costate dynamics.
+        dp_q = -self.sigma @ q
+        dp_S = u
+
+        # Stack the blocks back in the same order as y:
+        return np.vstack([dq, dS, dp_q, dp_S])
+
+    def _bc(
+        self,
+        ya: np.ndarray,
+        yb: np.ndarray,
+        q0: np.ndarray,
+        S0: np.ndarray,
+    ) -> np.ndarray:
+        """Boundary conditions for the BVP.
+        We impose two initial conditions and two terminal costate conditions.
+
+        Initial conditions:
+            q(0) = q0
+            S(0) = S0
+
+        Terminal conditions:
+            p_q(T) = 2 alpha q(T)
+            p_S(T) = 0
+
+        The returned vector must have length 4*n_assets, exactly matching the
+        BVP state dimension.
+        """
+        n = self.n_assets
+
+        # Values at t = 0.
+        q_a = ya[0:n]
+        S_a = ya[n:2*n]
+
+        # Values at t = T.
+        q_b = yb[0:n]
+        p_q_b = yb[2*n:3*n]
+        p_S_b = yb[3*n:4*n]
+
+        return np.concatenate([
+            q_a - q0,                         # q(0) - q0 = 0
+            S_a - S0,                         # S(0) - S0 = 0
+            p_q_b - 2.0 * self.alpha * q_b,   # p_q(T) - 2 alpha q(T) = 0
+            p_S_b,                            # p_S(T) = 0
         ])
 
     # ------------------------------------------------------------------ #
@@ -189,102 +349,153 @@ class AlmgrenChrissBVPSolver(ReferenceSolver):
     # ------------------------------------------------------------------ #
 
     def solve(self, z0: ArrayLike, **kwargs: Any) -> Trajectory:
-        """Solve the TPBVP starting at ``z0 = [q0, S0, X0]``.
-
-        Parameters
-        ----------
-        z0 : array-like, shape (3,)
-            Initial state ``[q0, S0, X0]``.  ``X0`` is forwarded to
-            ``Trajectory.meta``; the reconstructed ``X(t)`` always starts
-            from ``0`` (matching the legacy :mod:`liquidation_benchmark`
-            convention).
-
-            **Note (post-reduction):** the live :class:`LiquidationPortfolioOC`
-            model now has ``state_dim = 2 * n_assets`` and its
-            ``sample_initial_condition`` returns a 2-component ``[q0, S0]``.
-            Callers that drive this BVP solver from the new ``z0`` shape
-            must explicitly append ``X0 = 0.0`` (or whatever observer
-            initial cash they want) before calling :meth:`solve`. The
-            BVP itself is independent of the model's state layout —
-            this solver still works on the 3-state ``[q, S, X]`` BVP
-            because that is the analytical reference, not because it
-            mirrors the OC state.
+        """Solve the two-point BVP from one initial condition.
 
         Returns
         -------
         Trajectory
-            A deterministic Trajectory with state ``[q, S, X]``, control
-            ``u*``, label ``"Exact BVP"`` and the default dashed blue
-            style.
+            t: time grid, shape (N,)
+            z: state trajectory, shape (N, 2*n_assets + 1)
+               with layout [q, S, X]
+            u: control trajectory, shape (N-1, n_assets)
         """
         z0_np = _to_numpy(z0).reshape(-1)
-        if z0_np.shape != (3,):
-            raise ValueError(f"z0 must have shape (3,), got {z0_np.shape}")
-        q0, S0, X0 = float(z0_np[0]), float(z0_np[1]), float(z0_np[2])
+        n = self.n_assets
 
+        # Case 1: reduced state [q, S].
+        if z0_np.shape == (2 * n,):
+            q0 = z0_np[0:n]
+            S0 = z0_np[n:2*n]
+            # If the problem object has X0, use it; otherwise default to 0.
+            X0 = float(getattr(self.prob, "X0", 0.0))
+
+        # # Case 2: full observer state [q, S, X].
+        # elif z0_np.shape == (2 * n + 1,):
+        #     q0 = z0_np[0:n]
+        #     S0 = z0_np[n:2*n]
+        #     X0 = float(z0_np[2*n])
+
+        # else:
+        #     raise ValueError(
+        #         f"z0 must have shape ({2*n},) or ({2*n+1},), got {z0_np.shape}"
+        #     )
+
+        # Time grid for the collocation BVP solver.
         t_nodes = np.linspace(self.t0, self.T, self.n_bvp_nodes)
-        y_init = np.zeros((4, len(t_nodes)))
-        y_init[0] = np.linspace(q0, 0.0, len(t_nodes))
-        y_init[1] = S0
-        # Initial guess for p_q(t).  Adjoint ODE ``dp_q/dt = -σ² q`` with
-        # ``p_q(T) = 2 α q(T)`` and a linear-liquidation guess for q(t)
-        # integrates backwards as p_q(t) ≥ p_q(T) ≥ 0, so the sign here is
-        # POSITIVE.  (The previous version had a minus sign here, consistent
-        # only with the buggy sign-flipped ``_u_star``.)
-        y_init[2] = (self.sigma ** 2) * q0 * (self.T - t_nodes)
-        y_init[3] = 0.0
 
+        # Initial guess for the BVP solution.
+        y_init = np.zeros((4 * n, len(t_nodes)))
+
+        # Guess for q(t): linear liquidation from q0 to 0.
+        for i in range(n):
+            y_init[i] = np.linspace(q0[i], 0.0, len(t_nodes))
+
+        # Guess for S(t): constant price at S0.
+        for i in range(n):
+            y_init[n + i] = S0[i]
+
+        # Guess for p_q(t).
+        y_init[2*n:3*n] = self.sigma @ y_init[0:n]
+
+        # Guess for p_S(t): zero everywhere.
+        y_init[3*n:4*n] = 0.0
+
+        # Boundary condition closure.
         bc = lambda ya, yb: self._bc(ya, yb, q0, S0)
+
+        # Solve the two-point boundary value problem.
         sol = solve_bvp(
-            self._odes, bc, t_nodes, y_init,
-            tol=self.bvp_tol, max_nodes=10000,
+            self._odes,
+            bc,
+            t_nodes,
+            y_init,
+            tol=self.bvp_tol,
+            max_nodes=10000,
         )
+
         if not sol.success:
             warnings.warn(f"solve_bvp did not fully converge: {sol.message}")
 
+        # Extract solution blocks.
         t_arr = sol.x
-        q_sol, S_sol, p_q_sol, p_S_sol = sol.y
+        q_sol, S_sol, p_q_sol, p_S_sol = self._split_y(sol.y)
+
+        # Compute the optimal control along the BVP solution.
         u_sol_nodes = self._u_star(q_sol, S_sol, p_q_sol, p_S_sol)
 
-        # Reconstruct X(t) by trapezoidal (mid-point) integration of
-        # dX/dt = S u - eta (u^2 + epsilon)^(gamma/2).
-        # Note: inconsistent with Euler rollout used for JFB; preserved
-        # as-is for backwards-compatibility with the original benchmark.
+        # Reconstruct cash X(t).
+        # We use a trapezoidal rule on the BVP time grid.
         dt = np.diff(t_arr)
         X_sol = np.zeros_like(t_arr)
-        X_sol[0] = 0.0
+        X_sol[0] = X0
+
         for i, dt_i in enumerate(dt):
-            u_mid = 0.5 * (u_sol_nodes[i] + u_sol_nodes[i + 1])
-            S_mid = 0.5 * (S_sol[i] + S_sol[i + 1])
+            # Midpoint approximations for S and u.
+            u_mid = 0.5 * (u_sol_nodes[:, i] + u_sol_nodes[:, i + 1])
+            S_mid = 0.5 * (S_sol[:, i] + S_sol[:, i + 1])
+
+            # Cash flow:
             dX = (
-                S_mid * u_mid
-                - self.eta * (u_mid ** 2 + self.epsilon) ** (self.gamma / 2.0)
+                np.dot(S_mid, u_mid)
+                - np.sum(self.eta * (u_mid ** 2 + self.epsilon))
             )
+
             X_sol[i + 1] = X_sol[i] + dt_i * dX
 
-        # Pack the state trajectory: (N, 3)
-        z_traj = np.stack([q_sol, S_sol, X_sol], axis=1)
-        # Control on left endpoints: drop the right endpoint.
-        u_traj = u_sol_nodes[:-1].reshape(-1, 1)
+        # Pack the state trajectory.
+        z_traj = np.concatenate(
+            [q_sol.T, S_sol.T, X_sol[:, None]],
+            axis=1,
+        )
 
-        # Terminal cost G = -X(T) + alpha * q(T)^2 (see problem class).
-        G = float(-X_sol[-1] + self.alpha * q_sol[-1] ** 2)
+        # Control is defined on intervals, so we use left endpoints.
+        u_traj = u_sol_nodes[:, :-1].T
 
+        # Compute realised cost for reporting.
+        running_integrand = 0.5 * np.einsum(
+            "in,ij,jn->n",
+            q_sol,
+            self.sigma,
+            q_sol,
+        )
+
+        running_cost = _cumtrapz_with_leading_zero(
+            running_integrand,
+            t_arr,
+        )[-1]
+
+        # Terminal cost:
+        #   alpha ||q(T)||^2 - X(T)
+        terminal_cost = self.alpha * np.dot(q_sol[:, -1], q_sol[:, -1]) - X_sol[-1]
+
+        cost = float(running_cost + terminal_cost)
+
+        # Metadata for debugging / plotting.
         meta = {
             "solver": "AlmgrenChrissBVPSolver",
-            "q0": q0, "S0": S0, "X0_requested": X0,
-            "gamma": self.gamma, "n_bvp_nodes": self.n_bvp_nodes,
-            "bvp_tol": self.bvp_tol, "converged": bool(sol.success),
+            "n_assets": n,
+            "q0": q0,
+            "S0": S0,
+            "X0_requested": X0,
+            "gamma": self.gamma,
+            "n_bvp_nodes": self.n_bvp_nodes,
+            "bvp_tol": self.bvp_tol,
+            "converged": bool(sol.success),
+            "matrix_kappa": True,
+            "matrix_sigma": True,
         }
+
         return Trajectory(
             t=t_arr,
             z=z_traj,
             u=u_traj,
-            cost=G,
+            cost=cost,
             label="Exact BVP",
             style=dict(_DEFAULT_EXACT_STYLE),
             meta=meta,
         )
+
+
 
 
 # =============================================================================
@@ -308,7 +519,6 @@ def _cumtrapz_with_leading_zero(y: np.ndarray, x: np.ndarray) -> np.ndarray:
     out[0] = 0.0
     out[1:] = np.cumsum(inc)
     return out
-
 
 class AlmgrenChrissClosedForm(ReferenceSolver):
     r"""Closed-form analytical reference for single-asset Almgren-Chriss

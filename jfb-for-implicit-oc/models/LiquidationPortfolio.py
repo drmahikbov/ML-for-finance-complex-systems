@@ -126,27 +126,50 @@ class LiquidationPortfolioOC(ImplicitOC):
                 raise ValueError(f"{name} must be a scalar or a vector of length {n_assets}")
             return x_t
 
+        #function to convert scalar, vector, or matrix parameters into square matrices of shape (n_assets, n_assets) on the correct device
+        def _to_square_matrix(x, n_assets, device, name):
+            x_t = torch.as_tensor(x, dtype=torch.float32, device=device)
+
+            if x_t.ndim == 0:
+                if name == "sigma":
+                    # For sigma, we use sigma^2 * I.
+                    x_t = (x_t ** 2) * torch.eye(n_assets, dtype=torch.float32, device=device)
+                else:
+                    # Scalar -> scalar times identity
+                    x_t = x_t * torch.eye(n_assets, dtype=torch.float32, device=device)
+
+            elif x_t.ndim == 1 and x_t.numel() == n_assets:
+                if name == "sigma":
+                    # For sigma, we use sigma^2 * I
+                    x_t = torch.diag(x_t ** 2)
+                else:
+                    # Vector -> diagonal matrix
+                    x_t = torch.diag(x_t)
+
+            elif x_t.ndim == 2 and x_t.shape == (n_assets, n_assets):
+                pass
+
+            else:
+                raise ValueError(
+                    f"{name} must be a scalar, a vector of length {n_assets}, "
+                    f"or a square matrix of shape ({n_assets}, {n_assets})"
+                )
+
+            return x_t
+
         
         
         # # Market model: inventory risk scale sigma; linear price impact kappa; nonlinear cash friction eta, gamma.
-        # self.sigma = sigma
-        # self.kappa = kappa
-        # self.eta = eta
         self.gamma = gamma
-        self.sigma = _to_asset_vector(sigma, n_assets, device, "sigma")
-        self.kappa = _to_asset_vector(kappa, n_assets, device, "kappa")
+        self.sigma = _to_square_matrix(sigma, n_assets, device, "sigma")
+        self.kappa = _to_square_matrix(kappa, n_assets, device, "kappa")
         self.eta = _to_asset_vector(eta, n_assets, device, "eta")
 
 
         # Terminal penalty weight on leftover inventory (with -X term in G).
         self.alpha = alpha
 
-
-
         # Initial-condition distribution / levels for sampling z0 at episode start.
-        # self.q0_min = q0_min
-        # self.q0_max = q0_max
-        # self.S0 = S0
         self.q0_min = _to_asset_vector(q0_min, n_assets, device, "q0_min")
         self.q0_max = _to_asset_vector(q0_max, n_assets, device, "q0_max")
         self.S0 = _to_asset_vector(S0, n_assets, device, "S0")
@@ -182,7 +205,9 @@ class LiquidationPortfolioOC(ImplicitOC):
         q = z[:, :n]
         S = z[:, n:2 * n]
 
-        inv_risk    = 0.5 * torch.sum((self.sigma ** 2) * (q ** 2), dim=1)
+        ## Correlated inventory-risk term: 0.5 * q^T sigma q for each batch element.
+        inv_risk = 0.5 * torch.einsum("bi,ij,bj->b", q, self.sigma, q)
+
         # Cash flow appears with a MINUS sign: the OC minimises the running
         # cost, and trading revenue S·u is income (negative cost).
         cash_flow   = -torch.sum(S * u, dim=1)
@@ -254,48 +279,10 @@ class LiquidationPortfolioOC(ImplicitOC):
             squeeze = False
 
         dq = -u                       # (batch, n)
-        dS = -self.kappa * u          # (batch, n) — kappa broadcasts per asset
+        dS = -u @ self.kappa.T       # Cross-impact price dynamics: dS/dt = -Lambda u.
 
         result = torch.cat((dq, dS), dim=1)   # (batch, 2n)
         return result[0] if squeeze else result
-
-    def compute_grad_lagrangian_(
-        self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
-    ) -> torch.Tensor:
-        """Unbatched ``∂L'/∂u`` for vmap/jacrev (single-sample variant of
-        :meth:`compute_grad_lagrangian`).
-
-        Same closed-form as the batched routine — ``-S + η γ u (u² + ε)^{γ/2-1}``
-        per asset — on ``(state_dim,) / (control_dim,)`` shapes, matching
-        the contract of :meth:`ImplicitOC.compute_grad_H_u_`.
-        """
-        n = self.n_assets
-        S = z[n:2 * n]                                            # (n,)
-        grad_impact = (
-            self.eta * self.gamma * u
-            * (u.pow(2) + self.epsilon).pow(self.gamma / 2.0 - 1.0)
-        )
-        return -S + grad_impact                                   # (n,)
-
-    def compute_grad_f_u_(
-        self, z: torch.Tensor, u: torch.Tensor, grad_f_u_: torch.Tensor
-    ) -> torch.Tensor:
-        """Unbatched ``∂f'/∂u`` writer for vmap/jacrev (single-sample
-        variant of :meth:`compute_grad_f_u`).
-
-        Buffer shape is ``(control_dim, state_dim) = (n, 2n)``. Layout
-        ``grad[i, s] = ∂f_s/∂u_i``:
-
-            grad[i, i]     = -1               (∂(dq_i/dt)/∂u_i)
-            grad[i, n + i] = -kappa_i         (∂(dS_i/dt)/∂u_i)
-
-        No cash row anymore — ``X`` is observer-only.
-        """
-        n = self.n_assets
-        for i in range(n):
-            grad_f_u_[i, i] = -1.0
-            grad_f_u_[i, n + i] = -self.kappa[i]
-        return grad_f_u_
 
     def compute_grad_f_u(
         self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
@@ -323,9 +310,10 @@ class LiquidationPortfolioOC(ImplicitOC):
         n = self.n_assets
         grad = torch.zeros(batch, self.control_dim, self.state_dim, device=z.device)
 
-        for i in range(n):
-            grad[:, i, i] = -1.0
-            grad[:, i, n + i] = -self.kappa[i]
+        for j in range(n):
+            grad[:, j, j] = -1.0
+            for i in range(n):
+                grad[:, j, n + i] = -self.kappa[i, j]
 
         return grad[0] if squeeze else grad
 
@@ -389,7 +377,7 @@ class LiquidationPortfolioOC(ImplicitOC):
         q = z[:, :n]
 
         grad = torch.zeros(z.shape[0], self.state_dim, device=z.device)
-        grad[:, :n]      = (self.sigma ** 2) * q
+        grad[:, :n] = q @ self.sigma.T      # Gradient of 0.5*q^T*Sigma*q w.r.t. q
         grad[:, n:2 * n] = -u
 
         return grad[0] if squeeze else grad
@@ -501,10 +489,11 @@ class LiquidationPortfolioOC(ImplicitOC):
 
         u = (S + p_q + self.kappa * p_S) / (2.0 * self.eta)
         return u[0] if squeeze else u
-
+    
     # ------------------------------------------------------------------
     # Costate / value-function network factory override
     # ------------------------------------------------------------------
+
     def make_p_net(
         self,
         hidden_dim: int = 50,
