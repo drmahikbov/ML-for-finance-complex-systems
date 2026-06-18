@@ -1,53 +1,15 @@
 """
 models.PortfolioOC_RL
 ---------------------
-Merton-type portfolio optimisation with exponential risk penalty, in the
-**RL setting** (the agent does not know the drift μ or the risk-free rate r).
+Merton-type portfolio optimisation with exponential risk penalty (RL setting).
 
-Faithful instantiation of §4 of the Pontryagin-RL notes:
+State: W (wealth). Control: π (portfolio fraction).
+Dynamics: dW/dt = r W + π(μ − r)W. Running cost: L = λ(exp(π²) − 1).
+Terminal cost: G = −log(W/W_ref).
 
-    State:    z = W      (wealth, scalar)            n = 1
-    Control:  u = π      (portfolio fraction)        m = 1
-
-    Dynamics:        dW/dt = r W + π (μ - r) W                          (24)
-    Running cost:    L(t, W, π) = λ (e^{π²} - 1)                        (25)
-    Terminal cost:   G(W)       = -log(W / W_ref)                       (26)
-
-The Hamiltonian (using the existing repo's *minimisation* convention
-``H = L + ⟨p, f⟩``) is
-
-    H(t, W, p, π) = λ (e^{π²} - 1) + p · [r W + π (μ - r) W]
-
-and ``∇_π H = 2 λ π e^{π²} + p (μ - r) W``. The optimality condition
-``∇_π H = 0`` is transcendental in π — there is no closed form. This is
-exactly the implicit-Hamiltonian regime the Gelphman et al. construction
-addresses.
-
-Two roles of this class
-~~~~~~~~~~~~~~~~~~~~~~~
-1. **Designer-side knowns.** Implements the abstract methods of
-   :class:`ImplicitOC_RL` (running cost, terminal cost, IC sampler).
-   These are what the agent uses during training.
-
-2. **Simulator side.** Also implements ``compute_f``, ``compute_grad_f_z``,
-   ``compute_grad_f_u`` *non-abstractly*, for two purposes:
-
-   - constructing an :class:`AnalyticalEnvironment` that hides the true
-     dynamics behind ``env.step``;
-   - constructing an :class:`OracleJacobianEstimator` for the
-     oracle-vs-RLS sanity check described in ``core-RL/README.md``.
-
-   These are stored on the class because the *experimenter* (you) knows
-   them, even though the agent does not. The agent's training path
-   (``compute_loss_RL``) never calls them.
-
-Numerical safety
-~~~~~~~~~~~~~~~~
-Wealth is clamped from below by ``W_floor`` (default ``1e-4``) before the
-log/divide in ``compute_G`` / ``compute_grad_G_z``. With sensible IC
-sampling and bounded controls this clamp never activates in practice,
-but it prevents NaN propagation if the policy briefly produces an
-extreme position before the value function has trained.
+∇_π H = 2λπ exp(π²) + p(μ−r)W is transcendental — no closed-form π*. The
+agent never sees μ or r; they appear only in `compute_f` (used by the
+environment) and in `OracleJacobianEstimator`.
 """
 
 from __future__ import annotations

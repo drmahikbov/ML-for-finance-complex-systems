@@ -3,35 +3,12 @@ benchmarking.solvers
 --------------------
 Reference trajectory solvers.
 
-A :class:`ReferenceSolver` turns an initial condition into a
-:class:`~benchmarking.trajectory.Trajectory`.  Two concrete implementations
-are shipped:
+Abstract `ReferenceSolver` plus two concrete implementations:
+- `AlmgrenChrissBVPSolver`: closed-form γ=2 BVP solution for
+  `LiquidationPortfolioOC`.
+- `JFBPolicyRollout`: explicit-Euler rollout of a trained JFB policy.
 
-* :class:`AlmgrenChrissBVPSolver` -- closed-form γ=2 two-point BVP solver
-  for :class:`LiquidationPortfolioOC`.
-* :class:`JFBPolicyRollout` -- explicit-Euler rollout of a trained JFB
-  policy.
-
-Both return a single-path (deterministic) Trajectory.
-
-Adding a new problem
-~~~~~~~~~~~~~~~~~~~~
-Subclass :class:`ReferenceSolver` and implement ``solve(z0, ...)``.
-For example, a multi-asset Almgren-Chriss reference solver's
-``solve`` signature would look like::
-
-    class MultiAssetAlmgrenChrissBVPSolver(ReferenceSolver):
-        def solve(self, z0: np.ndarray, **kwargs) -> Trajectory:
-            # z0 layout: [q_1, ..., q_n, S_1, ..., S_n, X]  (length 2n+1)
-            # internal state for the BVP is [q, S, p_q, p_S]  (size 4n)
-            # return a Trajectory with z.shape == (N, 2n+1) and
-            # u.shape == (N-1, n).
-            ...
-
-No change to :class:`benchmarking.trajectory.Trajectory`,
-:class:`benchmarking.plotter.BenchmarkPlotter` or
-:mod:`benchmarking.metrics` is required -- they all work off the generic
-shape conventions.
+Both produce single-path (deterministic) `Trajectory` objects.
 """
 
 from __future__ import annotations

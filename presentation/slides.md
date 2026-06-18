@@ -13,6 +13,8 @@ mdc: true
 
 <em class="paper-ref">End-to-End Training of High-Dimensional Optimal Control with Implicit<br />Hamiltonians via Jacobian-Free Backpropagation</em>
 
+Ignacio Adrogué, Marin Hanachowicz, François Barré, Hector Stekelorom
+
 <!--
 Title and motivation together: many OC problems admit a Hamiltonian whose maximizer has no closed form, so standard “differentiate through an explicit policy map” pipelines break. We still want a neural surrogate phi_theta for the value, recover feedback implicitly from H_u=0, roll trajectories z_x(t) forward from sampled initial conditions x, and train against the objective. Roadmap: HJB/PMP recap, implicit vs explicit Hamiltonians, JFB, Almgren–Chriss reproduction, why full state (q,S,X) failed, reduced (q,S) results, stochastic outlook, conclusions.
 -->
@@ -360,7 +362,7 @@ Speaker: $X(T)-X_0=\int \dot X$ absorbs cash into $L'$; decomposition $\phi=X+\t
 
 ## 1.8. Results
 
-**Plate A** · multi-asset liquidation: inventory trajectories $q_i(t)$ and trading rates $u_i(t)$ (slots C–D still open for errors / diagnostics).
+**Plate A** · multi-asset liquidation: inventory trajectories $q_i(t)$ and trading rates $u_i(t)$.
 
 <!--
 Additional exports: ../jfb-for-implicit-oc/results/LiquidationPortfolioOC/benchmark/…
@@ -369,16 +371,16 @@ Additional exports: ../jfb-for-implicit-oc/results/LiquidationPortfolioOC/benchm
 <div class="results-grid">
 
 <div class="plot-slot">
-<div class="plot-slot__label">Plot A · $q_i(t)$</div>
+<!-- <div class="plot-slot__label">Plot A · $q_i(t)$</div> -->
 <img src="/images/multi-q.png" alt="Inventory trajectories q_i versus time." />
 </div>
 
 <div class="plot-slot">
-<div class="plot-slot__label">Plot B · $u_i(t)$</div>
+<!-- div class="plot-slot__label">Plot B · $u_i(t)$</div> -->
 <img src="/images/multi-u.png" alt="Trading rates u_i versus time." />
 </div>
 
-<div class="plot-slot">
+<!-- <div class="plot-slot">
 <div class="plot-slot__label">Plot C</div>
 <span>Value or running loss error</span>
 </div>
@@ -386,7 +388,7 @@ Additional exports: ../jfb-for-implicit-oc/results/LiquidationPortfolioOC/benchm
 <div class="plot-slot">
 <div class="plot-slot__label">Plot D</div>
 <span>Terminal mismatch / diagnostics</span>
-</div>
+</div> -->
 
 </div>
 
@@ -398,21 +400,21 @@ Speaker: cite experiment settings briefly; emphasize agreement with deterministi
 
 ## 1.8. Results *(continued)*
 
-**Plate B** · training dynamics: loss versus work units, memory versus epochs ($(\phi_\theta, u_\theta^\star)$ rollouts optional in remaining slots).
+**Plate B** · training dynamics: loss versus work units, memory versus epochs.
 
 <div class="results-grid">
 
 <div class="plot-slot">
-<div class="plot-slot__label">Plot E · loss</div>
+<!-- <div class="plot-slot__label">Plot E · loss</div> -->
 <img src="/images/loss-vs-work.png" alt="Loss versus work units (log–log)." />
 </div>
 
 <div class="plot-slot">
-<div class="plot-slot__label">Plot F · memory</div>
+<!-- <div class="plot-slot__label">Plot F · memory</div> -->
 <img src="/images/mem-vs-epochs.png" alt="CPU memory versus training epoch." />
 </div>
 
-<div class="plot-slot">
+<!-- <div class="plot-slot">
 <div class="plot-slot__label">Plot G</div>
 <span>Policy rollout trajectory</span>
 </div>
@@ -420,7 +422,7 @@ Speaker: cite experiment settings briefly; emphasize agreement with deterministi
 <div class="plot-slot">
 <div class="plot-slot__label">Plot H</div>
 <span>Comparison vs.\ baseline / oracle</span>
-</div>
+</div> -->
 
 </div>
 

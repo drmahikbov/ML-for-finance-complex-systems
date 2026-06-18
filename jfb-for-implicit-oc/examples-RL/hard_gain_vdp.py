@@ -1,28 +1,14 @@
 """
-examples-RL.vanderpol_comparison
-----------------------------------
-Head-to-head comparison of two gradient-estimation strategies on the
-**Van der Pol oscillator stabilisation** problem:
-
-    Method A — JFB-RL (ours)
-        Implicit Hamiltonian policy (ImplicitNetOC_RL) trained via the
-        JFB-with-estimates surrogate.  The environment is treated as a
-        **black box**: dynamics are never differentiated; local Jacobians
-        are estimated online by Recursive Least Squares (RLS).
-
-    Method B — Autodiff-BPTT
-        Explicit MLP policy trained by backpropagating *directly through
-        the differentiable Euler rollout* (standard BPTT).  This requires
-        access to the analytical f, which is unavailable in real RL
-        settings.
-
-Both methods solve the same problem, use the same optimizer (Adam), and
-are trained for the same number of epochs.  The comparison tests whether
-JFB-RL, which asks strictly less of the environment, can match the
-performance of the privileged Autodiff baseline.
+examples-RL.hard_gain_vdp
+--------------------------
+Three-way benchmark on the Hard Gain Van der Pol oscillator
+(HardGainVanDerPolOC_RL): JFB-RL / RLS, JFB-RL / Oracle Jacobians, and
+Autodiff-BPTT. The gain variant adds a beta_gain parameter that increases
+oscillator nonlinearity. Per-epoch checkpoints are saved so that
+animation_vanderpol.py can replay the learning progress.
 
 Run from the repo root:
-    python jfb-for-implicit-oc/examples-RL/vanderpol_comparison.py
+    python jfb-for-implicit-oc/examples-RL/hard_gain_vdp.py
 """
 
 from __future__ import annotations

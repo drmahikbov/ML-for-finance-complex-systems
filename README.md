@@ -1,169 +1,142 @@
-# ML-for-finance-complex-systems
+# ML-for-Finance-Complex-Systems
 
-Implicit-network policy training for finite-horizon optimal control problems
-(JFB / FullAD), built around a small set of single-purpose abstractions:
+Training implicit-Hamiltonian optimal control policies via Jacobian-Free Backpropagation (JFB). The core idea: instead of backpropagating through an entire forward rollout (BPTT), the network is parameterised as a fixed-point operator T(u) = u − α∇_u H, and gradients flow only through the last few fixed-point iterations. This makes training tractable at time horizons and state dimensions where full autodiff would be prohibitive. The repo covers both the known-dynamics setting and an RL extension where the agent never accesses the dynamics directly — only a learned local Jacobian estimate from rollouts.
 
-| Layer            | Path                                  | Owns                                              |
-| ---------------- | ------------------------------------- | ------------------------------------------------- |
-| Math contract    | `jfb-for-implicit-oc/core/ImplicitOC` | Abstract OC problem (dynamics, costs, IC sampler) |
-| Run identity     | `jfb-for-implicit-oc/core/run_io`     | `tag`, `run_id`, every artifact filename          |
-| Disk layout      | `jfb-for-implicit-oc/core/paths`      | `results/<ProblemClassName>/.../` directories     |
-| Training loop    | `jfb-for-implicit-oc/core/OptimalControlTrainer` | Save / reload / finalize, plotting dispatch |
-| Plotting service | `jfb-for-implicit-oc/benchmarking/`   | `Trajectory`, `Panel`, `BenchmarkPlotter`         |
-| Concrete problem | `jfb-for-implicit-oc/models/`         | Math, plus `panels()` + `to_trajectory()`         |
-| Runner          | `jfb-for-implicit-oc/examples/`       | Wiring only — *no* paths, *no* filenames          |
+Code accompanies: arXiv 2510.00359 and arXiv 2602.00921.
 
 ## Setup
-
-Use the Python version pinned in `.python-version`, then:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-A virtual environment is recommended.
+Python version is pinned in `.python-version`. The main code lives under `jfb-for-implicit-oc/`; all example runners assume that as the working directory.
 
-## Running an existing model
+## Repository layout
+
+```
+jfb-for-implicit-oc/
+  core/            Abstract OC pipeline for known dynamics
+  core_RL/         RL extension: dynamics hidden, estimated via RLS
+  benchmarking/    Shared plotting and trajectory service (used by both pipelines)
+  models/          Concrete OC problems (known-dynamics and RL variants)
+  examples/        Runners for known-dynamics problems
+  examples-RL/     Runners for RL problems
+  results/         Output artifacts — auto-generated, not committed
+
+presentation/      Slidev slide deck (slides.md, slides-part2-rl.md)
+latex/             Notes and reference figures
+```
+
+## The two pipelines
+
+### Known-dynamics pipeline (`core/` + `models/` + `examples/`)
+
+A problem subclasses `ImplicitOC` (`core/ImplicitOC.py`) and implements the math contract: `compute_lagrangian`, `compute_grad_lagrangian`, `compute_f`, `compute_grad_f_u`, `compute_grad_f_z`, `compute_G`, `compute_grad_G_z`, and `sample_initial_condition`. It also provides `panels()` and `to_trajectory()` for the plotting service.
+
+The policy is an `ImplicitNetOC` (in `core/ImplicitNets.py`): a ResNN-based network that runs fixed-point iteration T(u) = u − α∇_u H at each time step. Backpropagation flows only through the last `tracked_iters` iterations (the JFB approximation). `CVXPolicy` (CvxpyLayer QP) and `DirectControlNets` are alternative baselines that bypass the fixed-point structure.
+
+`OptimalControlTrainer` (`core/OptimalControlTrainer.py`) owns the training loop: forward rollout via `compute_f`, loss from `compute_lagrangian` + `compute_G`, backward via JFB surrogate, optimizer step, periodic plotting, and checkpoint saving. It never touches file paths directly — those go through `RunIO`.
+
+`RunIO` (`core/run_io.py`) is the single source of truth for artifact filenames. It owns `tag` (e.g. `"JFB"` or `"FullAD"`) and `run_id` (timestamp), and derives every `.pth`, `.csv`, `.png` path from them. `Paths` (`core/paths.py`) creates the directory tree under `results/<ProblemClassName>/training/` and `results/<ProblemClassName>/rollouts/`.
+
+To run an example:
 
 ```bash
 cd jfb-for-implicit-oc
 python examples/example_liquidationportfolio.py
 ```
 
-Every run deterministically writes the following bundle (timestamps differ
-per invocation, so re-running never overwrites):
+Each run produces a deterministic six-artifact bundle:
 
 ```
 results/LiquidationPortfolioOC/
-├── training/
-│   ├── best_policy_<tag>_<YYYYMMDD_HHMMSS>.pth
-│   ├── history_<tag>_<YYYYMMDD_HHMMSS>.csv
-│   ├── loss_curve_<tag>_<YYYYMMDD_HHMMSS>.png
-│   └── training-plots/
-│       └── rollout_<tag>_<YYYYMMDD_HHMMSS>_NNNN.png   # one per plot_frequency
-└── rollouts/
-    ├── policy_rollout_<tag>_<YYYYMMDD_HHMMSS>.png      # final rollout (best policy)
-    └── trajectory_<tag>_<YYYYMMDD_HHMMSS>.pth          # raw tensor for replay
+  training/
+    best_policy_<tag>_<timestamp>.pth
+    history_<tag>_<timestamp>.csv
+    loss_curve_<tag>_<timestamp>.png
+    training-plots/rollout_<tag>_<timestamp>_NNNN.png
+  rollouts/
+    policy_rollout_<tag>_<timestamp>.png
+    trajectory_<tag>_<timestamp>.pth
 ```
 
-`<tag>` defaults to `"JFB"`; pass `tag="FullAD"` to `OptimalControlTrainer`
-to compare two strategies in the same `results/` tree without collisions.
+Re-running never overwrites because `run_id` is a timestamp. Passing `tag="FullAD"` to `OptimalControlTrainer` lets you compare two training strategies in the same `results/` tree without collisions.
 
-## Recipe: adding a new model
+### RL pipeline (`core_RL/` + `models/` + `examples-RL/`)
 
-The recipe is **three files**, in order. The trainer + `RunIO` +
-`BenchmarkPlotter` combo guarantees the artifact bundle above appears
-without you writing any path code.
+The RL pipeline mirrors the known-dynamics one, but the agent never calls `compute_f`. Instead it interacts with an `Environment` (`core_RL/Environment.py`), which exposes only a `step(z, u, t)` interface. For experiments where the dynamics are actually known, `AnalyticalEnvironment` wraps a `f_callable` and detaches all autograd through it, so the agent can't cheat.
 
-> **Quick start:** copy `jfb-for-implicit-oc/examples/example_TEMPLATE.py`
-> as `examples/example_<myproblem>.py` and resolve the two `TODO` blocks
-> (one import, one constructor). Everything else — `sys.path` bootstrap,
-> network wiring, optimizer, trainer call — is already in place. Running
-> the unmodified template fails fast with a clear message pointing at the
-> exact lines to edit.
+`JacobianEstimator` (`core_RL/JacobianEstimator.py`) estimates the local per-step Jacobians a_k = ∂f/∂z and b_k = ∂f/∂u from rollout data. Two implementations: `RLSJacobianEstimator` runs block recursive least-squares with a forgetting factor; `OracleJacobianEstimator` cheats using the analytical Jacobians and is used as a sanity-check baseline.
 
-### Checklist
+`ImplicitOC_RL` (`core_RL/ImplicitOC_RL.py`) is the abstract problem base for the RL setting. Like `ImplicitOC` but without `compute_f` in the abstract contract — the cost and gradient methods are the same; dynamics are hidden. `ImplicitNetOC_RL` (`core_RL/ImplicitNets_RL.py`) extends the known-dynamics network: T is overridden to use b_k, which must be injected via `policy.set_step_jacobian(b_k)` before every forward call.
 
-- [ ] **1. Define the problem in `jfb-for-implicit-oc/models/MyProblem.py`**
-  - [ ] `class MyProblemOC(ImplicitOC)` with `state_dim`, `control_dim`
-        passed to `super().__init__`
-  - [ ] Implement the math contract:
-    - [ ] `compute_lagrangian(t, z, u)`
-    - [ ] `compute_grad_lagrangian(t, z, u)`
-    - [ ] `compute_f(t, z, u)`
-    - [ ] `compute_grad_f_u(t, z, u)`
-    - [ ] `compute_grad_f_z(t, z, u)`
-    - [ ] `compute_G(z)`
-    - [ ] `compute_grad_G_z(z)`
-    - [ ] `sample_initial_condition()`
-    - [ ] `generate_trajectory(u, z0, nt, return_full_trajectory=False)`
-  - [ ] Plug into the plotting service (recommended):
-    - [ ] `panels(self) -> list[Panel]` — declarative subplot spec
-    - [ ] `to_trajectory(self, z_traj, policy=None, path_index=0, label=...) -> Trajectory`
-          — pack `(batch, state_dim, nt+1)` tensor into a `Trajectory`
-  - [ ] **No paths. No filenames. No matplotlib code.**
-  - [ ] If you can't supply `panels()` / `to_trajectory()` yet, the trainer
-        falls back to a legacy `plot_position_trajectories(z_traj, save_path=...)`
-        method (Quadcopter / MultiBicycle still work this way).
+The training loop in `OptimalControlTrainer_RL` (`core_RL/OptimalControlTrainer_RL.py`) owns both the Environment and the JacobianEstimator. Per-epoch: roll out via `env.step`, update the RLS estimates, build the JFB surrogate S(θ) explicitly from the detached a_k, b_k, and adjoint p_{k+1}, then call `surrogate.backward()`. The adjoint is computed analytically using `compute_grad_lagrangian_z` and `compute_grad_G_z`, not via autograd through the dynamics.
 
-- [ ] **2. Write the runner in `jfb-for-implicit-oc/examples/example_myproblem.py`**
-  - [ ] Copy `examples/example_TEMPLATE.py` as the starting point (it
-        already has the `sys.path` bootstrap, network wiring, optimizer,
-        scheduler, and `trainer.train(...)` call in place)
-  - [ ] Resolve **TODO[1]**: import your `MyProblemOC` from `models/`
-  - [ ] Resolve **TODO[2]**: instantiate `MyProblemOC(...)` with concrete
-        hyperparameters (dynamics, costs, IC distribution); delete the
-        `raise NotImplementedError(...)` immediately below it
-  - [ ] (Optional) override `Phi(3, 50, ...)` width, `u_min` / `u_max`,
-        optimizer, LR scheduler, `epochs`, `plot_frequency` if the
-        template defaults are wrong for your problem
-  - [ ] Sanity-check the constructor signature: the trainer is built with
-        `tag=...` only — no `save_name`, no output paths
-  - [ ] **No `os.path.join`. No `save_path=`. No `save_name=`.** The runner
-        is purely declarative.
+`core/paths.py`, `core/run_io.py`, `core/log_format.py`, and the entire `benchmarking/` package are shared unchanged between the two pipelines.
 
-- [ ] **3. Run it**
-  - [ ] `cd jfb-for-implicit-oc && python examples/example_myproblem.py`
-  - [ ] Confirm the six-artifact bundle landed under
-        `results/MyProblemOC/training/` and `results/MyProblemOC/rollouts/`
-  - [ ] Open `loss_curve_*.png` and `policy_rollout_*.png` for sanity
-
-### Optional: comparison-vs-reference plots
-
-If your problem has an analytical or BVP reference solution and you want
-overlay figures, copy the liquidation comparison utilities:
-
-- [ ] **4. Add a `MyProblemBenchmark`** modeled on
-      `liquidation_benchmark.LiquidationBenchmark` (provides the reference
-      curves)
-- [ ] **5. Add `plot_myproblem_jfb.py`** modeled on `plot_liquidation_jfb.py`
-      — it writes to `results/<cls>/benchmark/`, distinct from the trainer's
-      `rollouts/` (the trainer plot shows the trained policy alone; the
-      benchmark plot overlays it against the reference)
-
-This step is purely additive. Pure JFB research with no reference solution
-does *not* need it — the example file already produces a final rollout.
-
-## Smell test: when SoC is being violated
-
-If you find yourself writing any of the following, stop — something is
-leaking out of `RunIO` and the right fix is to extend `RunIO`, not to
-bypass it:
-
-- `os.path.join(...)` inside a model or example
-- `save_path=...` literal inside a model or example
-- A `save_name` / `output_dir` argument added to `train()` or
-  `OptimalControlTrainer.__init__`
-- A new `*_dir` constant defined in a model or example file
-- `matplotlib.pyplot` imported inside a model class (panels go through
-  `BenchmarkPlotter`, not direct plt calls)
-
-## Where the legacy lives
-
-- `models/Quadcopter.py`, `models/MultiBicycle.py` keep their bespoke
-  `plot_position_trajectories(z_traj, save_path=...)` and ride the
-  trainer's fallback branch. Migrate them to `panels()` /
-  `to_trajectory()` opportunistically.
-- `liquidation_benchmark.py` and `plot_liquidation_jfb.py` sit at the
-  package top level (rather than in `examples/`) because they are
-  comparison-vs-reference utilities — distinct from the trainer's
-  trained-policy-alone rollouts.
-- `examples/example_liquidationportfolio.py`, `example_multibicycle.py`,
-  and `example_multi_quadcopter.py` are fully-instantiated examples, not
-  copy templates. Use `examples/example_TEMPLATE.py` for that purpose;
-  copying a fully-instantiated example also works but you'll have more
-  problem-specific wiring to delete.
-
-## Verifying the recipe
-
-After implementing a new model, the cheapest sanity check is:
+To run a VdP benchmark:
 
 ```bash
 cd jfb-for-implicit-oc
-python -m py_compile models/MyProblem.py examples/example_myproblem.py
-python examples/example_myproblem.py        # short run, e.g. num_epochs=3
-ls results/MyProblemOC/training results/MyProblemOC/rollouts
+python examples-RL/vanderpol_comparison.py      # standard VdP: JFB-RL/RLS vs Oracle vs BPTT
+python examples-RL/hard_vdp_comparison.py       # same with exponential control cost
+python examples-RL/hard_gain_vdp.py             # adds state-dependent gain β·tanh(x₁)
 ```
 
-You should see exactly six files in the two directories, with timestamps
-inside the run window.
+For the portfolio problem:
+
+```bash
+python examples-RL/portfolio_optimization_RL.py   # train
+python examples-RL/evaluate_portfolio_rl.py        # evaluate a saved checkpoint
+python examples-RL/plot_portfolio_analytical.py    # plot analytical baseline
+```
+
+## Key files
+
+`**core/ImplicitOC.py**` — abstract base class for all problems. Defines the interface that `OptimalControlTrainer` calls into and that model authors implement.
+
+`**core/ImplicitNets.py**` — `ResNN` (residual MLP), `Phi` (the policy backbone), `ImplicitNetOC` (wraps Phi into the fixed-point operator). The `tracked_iters` parameter controls the JFB approximation depth.
+
+`**core/run_io.py**` — all filename decisions go here. If you find yourself writing `os.path.join` in a model or example file, stop and add a method to `RunIO` instead.
+
+`**benchmarking/trajectory.py**` — `Trajectory` dataclass holding `t`, `z`, `u` numpy arrays and plot style. Every model's `to_trajectory()` returns one of these.
+
+`**benchmarking/plotter.py**` — `Panel` (declarative subplot spec) and `BenchmarkPlotter` (renders a figure from a list of Trajectories against a list of Panels). Models define what to plot via `panels()`; the plotter executes it.
+
+`**core_RL/JacobianEstimator.py**` — shapes matter: a_k is `(B, n, n)` with `a_k[b, i, j] = ∂f_i/∂z_j`; b_k is `(B, m, n)` with `b_k[b, i, j] = ∂f_j/∂u_i` (transposed convention, consistent with `core/ImplicitOC.compute_grad_H_u`). If the adjoint pass gives wrong signs, check this layout first.
+
+`**core_RL/ImplicitOC_RL.py**` — `compute_grad_H_u_estimated` and `compute_loss_RL`. The sign convention for the adjoint (p_k += Δt·(aₖᵀ p_{k+1} + ∇_z L)) is documented at the top of the file.
+
+## Models
+
+**Known dynamics** (in `models/`, used by `examples/`):
+
+- `LiquidationPortfolio.py` — Almgren-Chriss liquidation; has a closed-form γ=2 BVP solution used for overlay comparison
+- `Consumption.py` — 100-agent consumption-savings problem
+- `MultiBicycle.py` — 100-agent bicycle stabilisation
+- `Quadcopter.py` — 1, 6, or 100 quadrotors; uses bespoke `plot_position_trajectories` (legacy, predates the Panel/Trajectory service)
+
+**RL setting** (in `models/`, used by `examples-RL/`):
+
+- `VanDerPolOC_RL.py` — standard VdP; L = x₁² + x₂² + 0.5u², ∇_u H = u + p₂ is trivially solvable (useful as a baseline since the implicit iteration is unnecessary)
+- `Hard_VDP_RL.py` — same dynamics, exponential cost L = x₁² + x₂² + λ(eᵘ² − 1); ∇_u H is transcendental, so the fixed-point iteration is genuinely required
+- `Hard_Gain_VDP_RL.py` — adds state-dependent control gain ẋ₂ = (1−x₁²)x₂ − x₁ + (1 + β·tanh(x₁))·u; harder for RLS to identify b_k
+- `PortfolioOC_RL.py` — Merton portfolio with exponential risk penalty; the agent sees only wealth, never μ or r
+
+## Adding a new model
+
+Copy `examples/example_TEMPLATE.py` to `examples/example_myproblem.py` and resolve the two `TODO` blocks (import + constructor). Create `models/MyProblemOC.py` subclassing `ImplicitOC`. Run it with:
+
+```bash
+cd jfb-for-implicit-oc
+python examples/example_myproblem.py
+```
+
+The six-artifact bundle will appear under `results/MyProblemOC/` automatically. For a comparison against a reference solution, see `examples/explicit_ustar/liquidation_benchmark.py` and `plot_liquidation_jfb.py` as the pattern to follow — those write to `results/<cls>/benchmark/`, distinct from the trainer's rollout output.
+
+For a new RL problem, subclass `ImplicitOC_RL`, implement the cost and gradient methods but not `compute_f`, and wire it to `AnalyticalEnvironment` + one of the `JacobianEstimator` implementations. See `examples-RL/vanderpol_comparison.py` for the wiring pattern.
+
+## Sanity-check workflow for the RL pipeline
+
+The most useful diagnostic when something breaks: train on the same seed with (A) the known-dynamics `OptimalControlTrainer` and (B) `OptimalControlTrainer_RL` with `OracleJacobianEstimator`. The loss curves should match up to numerical noise. If they diverge, the bug is in the surrogate construction. Once A ≈ B, swap Oracle for RLS — the gap is then the cost of estimating Jacobians from data rather than using the analytical ones.

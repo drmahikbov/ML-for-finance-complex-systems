@@ -1,3 +1,10 @@
+"""
+core.utils
+----------
+Development utilities. `GradientTester` checks `compute_grad_f_u` and
+`compute_grad_f_z` against finite differences, producing Taylor-convergence
+plots.
+"""
 import torch
 import matplotlib.pyplot as plt
 plt.ion()

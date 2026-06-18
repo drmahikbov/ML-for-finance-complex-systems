@@ -1,11 +1,9 @@
 """
 benchmarking.metrics
 --------------------
-Generic error metrics between two :class:`Trajectory` objects.
-
-All helpers are problem-agnostic: they operate on components of the state
-or control vectors, interpolating the reference trajectory onto the test
-trajectory's time grid when the two grids differ.
+Problem-agnostic error metrics (MAE, RMSE, L∞, terminal error) between two
+`Trajectory` objects. Interpolates the reference onto the test time grid when
+the grids differ.
 """
 
 from __future__ import annotations

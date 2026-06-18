@@ -1,3 +1,10 @@
+"""
+examples.example_multibicycle
+------------------------------
+Train the JFB implicit policy on the multi-bicycle formation problem
+(MultiBicycleOC). Set full_AD_mode=True for full autodiff comparison.
+Results logged to results/MultiBicycleOC/training/.
+"""
 import torch
 import numpy as np
 from MultiBicycle import MultiBicycleOC

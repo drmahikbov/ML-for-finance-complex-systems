@@ -42,7 +42,7 @@ Where we define a function $F$ that takes $(t_k,z_k,u_k)$ and returns the next s
 For one initial condition $x$, the discretized training objective is
 
 $$
-\min_\theta \ \mathbb E_{x\sim \rho }  J_x(\theta) = \min_\theta \ \mathbb E_{x\sim \rho} 
+\min_\theta \ \mathbb E_{x\sim \rho }  J_x(\theta) = \min_\theta \ \mathbb E_{x\sim \rho}
 \left[\sum_{k=0}^{N-1}
 L(t_k,z_k,u^\star_{\theta,k})\,\Delta t
 +
@@ -88,8 +88,7 @@ F_t = [\,A_t \ \ B_t \ \ c_t\,],
 x_t = \begin{bmatrix} z_t \\ u_t \\ 1 \end{bmatrix},
 $$
 
-with $A_t = \nabla_z f_t$, $B_t = \nabla_u f_t$, and the "1" absorbing the affine offset $c_t$. 
-
+with $A_t = \nabla_z f_t$, $B_t = \nabla_u f_t$, and the "1" absorbing the affine offset $c_t$.
 
 ---
 
@@ -116,6 +115,7 @@ $$
 
 - $t$ = time index inside a trajectory, $k$ = rollout index.
 - Works best when successive rollouts remain locally informative.
+
 ---
 
 ## 2.5. Local linear transition model
@@ -198,7 +198,6 @@ $$
 
 ---
 
-
 ## 2.7. JFB gradient with estimated dynamics
 
 The exact gradient has the structure
@@ -228,6 +227,7 @@ I-\frac{\partial T_\theta}{\partial u}
 \frac{\partial T_\theta}{\partial\theta}
 \text{ expensive}.
 $$
+
 When we discretize and apply JFB ($\frac{d u^\star_\theta}{d\theta}
 \leadsto
 \frac{\partial \widehat T_{\theta,k}}{\partial\theta}$), our gradient becomes:
@@ -288,11 +288,11 @@ $$
 
 **Three variants.** Same VdP backbone, increasing difficulty for JFB-RL:
 
-|                  | Standard VdP                  | Hard VdP                                 | Hard-Gain VdP                                    |
-|------------------|-------------------------------|------------------------------------------|--------------------------------------------------|
-| Control penalty  | $\tfrac{1}{2} u^2$            | $\lambda_u(e^{u^2}-1)$                   | $\lambda_u(e^{u^2}-1)$                           |
-| Control coupling | $\dot x_2 \mathrel{+}= u$     | $\dot x_2 \mathrel{+}= u$                | $\dot x_2 \mathrel{+}= (1 + \beta\tanh x_1)\, u$ |
-| $B_k = \partial_u f$ | constant                  | constant                                 | **state-dependent**                              |
+|                      | Standard VdP              | Hard VdP                  | Hard-Gain VdP                                    |
+| -------------------- | ------------------------- | ------------------------- | ------------------------------------------------ |
+| Control penalty      | $\tfrac{1}{2} u^2$        | $\lambda_u(e^{u^2}-1)$    | $\lambda_u(e^{u^2}-1)$                           |
+| Control coupling     | $\dot x_2 \mathrel{+}= u$ | $\dot x_2 \mathrel{+}= u$ | $\dot x_2 \mathrel{+}= (1 + \beta\tanh x_1)\, u$ |
+| $B_k = \partial_u f$ | constant                  | constant                  | **state-dependent**                              |
 
 ---
 
@@ -324,7 +324,7 @@ The agent seeks high terminal wealth while penalizing aggressive positions.
 
 ## 2.11. Van der Pol — learned control vs Oracle (RL)
 
-<div class="absolute inset-0 flex items-center justify-center p-4">
+<div class="absolute top-20 left-0 right-0 bottom-0 flex items-center justify-center p-4">
   <img
     src="/images/rl/vanderpol_oracle_vs_rls.png"
     class="max-w-full max-h-full object-contain"
@@ -335,7 +335,6 @@ The agent seeks high terminal wealth while penalizing aggressive positions.
 
 ## 2.11. Van der Pol — learning dynamics (RL)
 
-
 <div class="absolute inset-0 flex items-center justify-center p-4">
   <img
     src="/images/rl/vanderpol_rl_learning_style.gif"
@@ -343,12 +342,11 @@ The agent seeks high terminal wealth while penalizing aggressive positions.
   />
 </div>
 
-
 ---
 
 ## 2.12. Hard Van der Pol — learned control vs Oracle (RL)
 
-<div class="absolute inset-0 flex items-center justify-center p-4">
+<div class="absolute top-20 left-0 right-0 bottom-0 flex items-center justify-center p-4">
   <img
     src="/images/rl/hard_comparison_oracle_vs_rls.png"
     class="max-w-full max-h-full object-contain"
@@ -359,7 +357,6 @@ The agent seeks high terminal wealth while penalizing aggressive positions.
 
 ## 2.12. Hard Van der Pol — learning dynamics (RL)
 
-
 <div class="absolute inset-0 flex items-center justify-center p-4">
   <img
     src="/images/rl/hardvanderpol_rl_learning_style.gif"
@@ -367,12 +364,11 @@ The agent seeks high terminal wealth while penalizing aggressive positions.
   />
 </div>
 
-
 ---
 
 ## 2.13. Hard Gain Van der Pol — learned control vs Oracle (RL)
 
-<div class="absolute inset-0 flex items-center justify-center p-4">
+<div class="absolute top-20 left-0 right-0 bottom-0 flex items-center justify-center p-4">
   <img
     src="/images/rl/hardg_comparison_oracle_vs_rls.png"
     class="max-w-full max-h-full object-contain"
@@ -383,7 +379,6 @@ The agent seeks high terminal wealth while penalizing aggressive positions.
 
 ## 2.13. Hard Gain Van der Pol — learning dynamics (RL)
 
-
 <div class="absolute inset-0 flex items-center justify-center p-4">
   <img
     src="/images/rl/hardgvanderpol_rl_learning_style.gif"
@@ -391,27 +386,27 @@ The agent seeks high terminal wealth while penalizing aggressive positions.
   />
 </div>
 
-
 ---
 
 ## 2.14. Portfolio OC — RL training (JFB–RL / RLS)
 
+<div class="absolute inset-0 grid grid-cols-[40%_60%] gap-4 p-4 pt-16">
 
-<div class="grid grid-cols-2 gap-4 items-start">
+<img src="/images/rl/portfolio_loss_curve.png" alt="Portfolio RL training loss" class="w-full h-full object-contain" />
 
-<img src="/images/rl/portfolio_loss_curve.png" alt="Portfolio RL training loss" class="w-full max-h-56 object-contain mx-auto" />
-
-<img src="/images/rl/portfolio_policy_rollout.png" alt="Portfolio learned policy rollout" class="w-full max-h-56 object-contain mx-auto" />
+<img src="/images/rl/analytical_vs_learned.png" alt="Portfolio learned policy rollout" class="w-full h-full object-contain" />
 
 </div>
 
-**Mid-training rollout** epoch step:
+<!-- **Mid-training rollout** epoch step:
 
-<img src="/images/rl/portfolio_rollout_training_epoch200.png" alt="Portfolio rollout during training" class="mx-auto block max-h-48 object-contain" />
+<img src="/images/rl/portfolio_rollout_training_epoch200.png" alt="Portfolio rollout during training" class="mx-auto block max-h-48 object-contain" /> -->
 
 ---
 
 ## 2.15. Practical challenges
+
+<div class="absolute inset-0 flex flex-col justify-center px-12 pt-16">
 
 - **Locality of RLS:** old rollouts may be misleading if they are far from the current trajectory.
 - **Jacobian warm-up:** early $A_k,B_k$ estimates may be noisy.
@@ -419,7 +414,9 @@ The agent seeks high terminal wealth while penalizing aggressive positions.
 - **Long-horizon sensitivity:** errors in $A_k$ propagate backward through the adjoint recursion.
 - **Exploration:** enough perturbation is needed to identify $B_k$.
 
-Diagnostics:
+</div>
+
+<!-- Diagnostics:
 
 $$
 \|z_{k+1}-\widehat F_k(z_k,u_k)\|,
@@ -429,7 +426,7 @@ $$
 \partial_t\phi_\theta+\sup_u \widehat H_k,
 $$
 
-and fixed-point residuals.
+and fixed-point residuals. -->
 
 ---
 

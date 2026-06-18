@@ -1,25 +1,13 @@
 """
-Working Jacobian-based trainer that extends your existing ImplicitNetOC.
-This follows the exact pattern from your utils_JFB.py but adapted for optimal control.
+core.OptimalControlTrainer
+--------------------------
+JFB training loop for `ImplicitNetOC` policies.
 
-Artifact policy
-~~~~~~~~~~~~~~~
-Every training run is owned by a :class:`core.run_io.RunIO` instance, which
-decides the on-disk layout. The trainer never builds paths or filenames
-itself; it just reads them off ``self.run_io``. Each call to :meth:`train`
-produces, deterministically:
-
--* ``best_policy_<stem>.pth``      -- best-loss checkpoint
--* ``history_<stem>.csv``          -- full per-epoch metrics
--* ``loss_curve_<stem>.png``       -- post-training loss curve
--* ``training-plots/rollout_<stem>_NNNN.png`` -- mid-training rollouts
--* ``policy_rollout_<stem>.png``   -- final rollout of the best policy
--* ``trajectory_<stem>.pth``       -- saved tensor of that final rollout
-
-Plotting is delegated to ``benchmarking.BenchmarkPlotter`` for any model
-that exposes ``panels()`` and ``to_trajectory()``. Models that have not
-been migrated yet keep their bespoke ``plot_position_trajectories`` and
-hit the legacy fallback branch.
+Each epoch: rollout, `.backward()` on the JFB surrogate, optimizer step.
+Artifacts (checkpoint, loss curve, rollout figures, trajectory tensor) are
+managed by a `RunIO` instance. Plotting delegates to `BenchmarkPlotter` for
+models with `panels()` / `to_trajectory()`, with a legacy fallback for older
+models.
 """
 
 from __future__ import annotations

@@ -1,59 +1,16 @@
 """
-core-RL.ImplicitOC_RL
+core_RL.ImplicitOC_RL
 ---------------------
-Abstract base class for optimal-control problems in the **RL setting** —
-i.e. when the system dynamics ``f`` are unknown to the agent.
+Abstract base for optimal-control problems with unknown dynamics.
 
-Side-by-side comparison with ``core/ImplicitOC.py``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Like `core/ImplicitOC` but without `compute_f`, `compute_grad_f_u`, or
+`compute_grad_f_z` — the agent never sees the dynamics. Key additions:
+- `compute_grad_H_u_estimated`: Hamiltonian gradient using estimated `b_k`
+  in place of the true `∂f/∂u`.
+- `compute_loss_RL`: full training step — optional exploration rollout, clean
+  rollout, data-driven backward adjoint, and JFB surrogate scalar.
 
-==========================================  =================================================
-``core/ImplicitOC.py`` (known dynamics)     ``core-RL/ImplicitOC_RL.py`` (unknown dynamics)
-==========================================  =================================================
-abstract  ``compute_f``                     **REMOVED** — agent never sees f
-abstract  ``compute_grad_f_u``              **REMOVED** — agent never sees ∂f/∂u
-abstract  ``compute_grad_f_z``              **REMOVED** — agent never sees ∂f/∂z
-abstract  ``compute_lagrangian``            kept (designer choice)
-abstract  ``compute_grad_lagrangian``       kept (designer choice; w.r.t. u)
-—                                            **NEW**: ``compute_grad_lagrangian_z``
-                                                 (w.r.t. z, needed for backward adjoint;
-                                                  default autograd-based)
-abstract  ``compute_G``                     kept
-abstract  ``compute_grad_G_z``              kept
-abstract  ``sample_initial_condition``      kept
-``compute_grad_H_u``                        replaced by **``compute_grad_H_u_estimated``**
-                                                 which takes ``b_k`` instead of querying
-                                                 ``compute_grad_f_u``
-``compute_loss``                            replaced by **``compute_loss_RL``** which
-                                                 routes the rollout through ``env.step``,
-                                                 updates the Jacobian estimator, runs the
-                                                 data-driven backward adjoint, and returns
-                                                 a JFB-with-estimates surrogate scalar
-                                                 with the property that
-                                                 ``surrogate.backward()`` produces the
-                                                 RL-flavoured JFB gradient
-``alphaHJB`` / ``alphaadj``                 **REMOVED** — those penalties depend on f;
-                                                 they re-appear, if at all, only after we
-                                                 add a learned model in Step 3.
-==========================================  =================================================
-
-Sign / shape conventions
-~~~~~~~~~~~~~~~~~~~~~~~~
-We follow the existing ``core/`` repo:
-
-* Hamiltonian (minimisation form):  ``H = L + ⟨p, f⟩``.
-* ``∇_u H = ∇_u L + b_k @ p`` where ``b_k`` has shape ``(B, m, n)`` with
-  ``b_k[:, i, j] = ∂f_j / ∂u_i``  (so ``b_k @ p`` has shape ``(B, m)``).
-* Fixed-point step: ``T̂_k(u; z) = u - α ∇_u H``.
-
-With this convention, the JFB-with-estimates gradient is
-
-    dĴ/dθ ≈ Σ_k (∂T̂_k / ∂θ)ᵀ · [ Δt · ∇_u L + b_k @ p_{k+1} · Δt ]
-           = Σ_k (∂T̂_k / ∂θ)ᵀ · Δt · [ ∇_u L + b_k @ p_{k+1} ].
-
-The data-driven discrete adjoint, with continuous-time ``a_k = ∂f/∂z``, is
-
-    p_k = p_{k+1} + Δt · ( a_kᵀ @ p_{k+1} + ∇_z L ),    p_N = ∇G(z_N).
+Sign convention: H = L + ⟨p, f⟩; b_k shape (B, m, n) with b_k[:, i, j] = ∂f_j/∂u_i.
 """
 
 from __future__ import annotations
@@ -113,9 +70,7 @@ class ImplicitOC_RL(ABC):
 
         self.oc_problem_name = "Generic ImplicitOC_RL"
 
-    # ================================================================== #
-    # Abstract: designer-side knowns                                     #
-    # ================================================================== #
+    # Abstract: designer-side knowns
     @abstractmethod
     def compute_lagrangian(
         self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
@@ -158,9 +113,7 @@ class ImplicitOC_RL(ABC):
     def sample_initial_condition(self) -> torch.Tensor:
         """Draw a batch of initial states ``z_0 ∈ R^{B × state_dim}``."""
 
-    # ================================================================== #
-    # The Hamiltonian gradient — using estimated b_k                     #
-    # ================================================================== #
+    # The Hamiltonian gradient — using estimated b_k
     def compute_grad_H_u_estimated(
         self,
         t: TimeLike,
@@ -198,9 +151,7 @@ class ImplicitOC_RL(ABC):
         grad_pf = torch.bmm(b_k, p.unsqueeze(-1)).view(B, self.control_dim)  # (B, m)
         return grad_L + grad_pf
 
-    # ================================================================== #
-    # The RL training-loss routine                                       #
-    # ================================================================== #
+    # The RL training-loss routine
     def compute_loss_RL(
         self,
         policy,                       # ImplicitNetOC_RL
@@ -387,9 +338,7 @@ class ImplicitOC_RL(ABC):
             "lin_residual": lin_residual_acc / N,
         }
 
-    # ================================================================== #
-    # Convenience: deterministic rollout for plotting                    #
-    # ================================================================== #
+    # Convenience: deterministic rollout for plotting
     def generate_trajectory(
         self,
         policy,

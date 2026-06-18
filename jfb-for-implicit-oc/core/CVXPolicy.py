@@ -1,7 +1,14 @@
+"""
+core.CVXPolicy
+--------------
+CVXPY-based explicit policy networks for problems with tractable optimality
+conditions. Wraps a `CvxpyLayer` to solve the Hamiltonian minimisation as a
+small QP at each forward call, with a neural costate network supplying p.
+"""
 import torch
 import torch.nn as nn
 import cvxpy as cp
-from cvxpylayers.torch import CvxpyLayer 
+from cvxpylayers.torch import CvxpyLayer
 from ImplicitNets import DefaultPNet
 import numpy as np
 

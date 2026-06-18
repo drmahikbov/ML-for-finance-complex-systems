@@ -1,3 +1,12 @@
+"""
+models.MultiBicycle
+-------------------
+Formation control for a fleet of bicycles as an ImplicitOC problem.
+
+State: 4D per bicycle (x, y, heading, speed). Control: 2D per bicycle (steering
+angle, acceleration). Includes a pairwise interaction penalty to discourage
+collisions.
+"""
 import os
 os.environ['KMP_DUPLICATE_LIB_OK']='True' # Workaround for OMP: Error #15
 from ImplicitNets import ImplicitNetOC

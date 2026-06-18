@@ -1,42 +1,13 @@
 """
-models.VanDerPolOC_RL
----------------------
-Van der Pol oscillator stabilisation in the **RL setting** (dynamics unknown
-to the agent).
+models.Hard_Gain_VDP_RL
+------------------------
+Hard Gain Van der Pol oscillator stabilisation in the RL setting.
 
-    State:   z = (x₁, x₂) ∈ ℝ²     (oscillator position and velocity)
-    Control: u ∈ ℝ                   (scalar force input, clamped to [-3, 3])
-
-    Dynamics:
-        ẋ₁ = x₂
-        ẋ₂ = (1 - x₁²) x₂ − x₁ + u      (Van der Pol with additive control)
-
-    Modified Running cost:   L(z, u) = x₁² + x₂² + 0.5 u²
-    Terminal cost:  G(z)    = x₁² + x₂²
-
-Goal: steer the state to the origin (0, 0) from initial conditions near the
-limit cycle of the uncontrolled system.
-
-Optimality structure
-~~~~~~~~~~~~~~~~~~~~~
-The Hamiltonian is
-
-    H(z, u, p) = L + p · f = (x₁² + x₂²) + 0.5 u² + p₁ x₂ + p₂ ((1−x₁²)x₂ − x₁ + u)
-
-so ∇_u H = u + p₂, giving u*(z, p) = −p₂.
-
-This is *linear* in p₂ and trivially solvable, yet the implicit-policy
-formulation correctly recovers it via the fixed-point iteration
-    T(u) = u − α(u + p₂) → u* = −p₂
-while JFB-RL estimates the Jacobians needed to compute p₂ from rollout data.
-
-Why this problem is useful for a JFB-RL vs Autodiff comparison
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-1. The dynamics are nonlinear (presence of (1-x₁²)x₂), so Autodiff-BPTT must
-   propagate gradients through 60 non-trivial Euler steps.
-2. There is no known closed-form optimal policy (p₂ is the solution of the
-   two-point boundary value problem for the HJB PDE).
-3. The problem is non-finance, making it a clean general-purpose benchmark.
+Two modifications over the standard VanDerPolOC_RL:
+- Running cost: L = x₁² + x₂² + lambda_u · (exp(u²) − 1)  (exponential in u,
+  making ∇_u H transcendental — genuine fixed-point iteration required).
+- Gain dynamics: ẋ₂ = (1 − x₁²)x₂ − x₁ + (1 + beta · tanh(x₁)) · u
+  (state-dependent control gain, harder to identify from rollouts).
 """
 
 from __future__ import annotations

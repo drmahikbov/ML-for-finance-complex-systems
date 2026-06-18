@@ -1,11 +1,8 @@
 """
 examples-RL.evaluate_portfolio_rl
 ----------------------------------
-Load the latest trained JFB-RL checkpoint, roll out on a large fresh
-batch of initial conditions (never seen during training), and compare
-against the exact Merton analytical optimum.
-
-No retraining — just load, roll out, plot.
+Load the latest JFB-RL checkpoint and compare against the analytical
+Merton optimum on a fresh batch of initial conditions. No retraining.
 
 Run from the repo root:
     python jfb-for-implicit-oc/examples-RL/evaluate_portfolio_rl.py

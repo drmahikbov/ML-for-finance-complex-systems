@@ -1,3 +1,12 @@
+"""
+core.ImplicitOC
+---------------
+Abstract base class for implicit optimal-control problems.
+
+Concrete subclasses in models/ implement `compute_f`, `compute_lagrangian`,
+`compute_G`, and their Jacobians. `compute_loss` runs the full rollout,
+assembles the JFB surrogate, and returns a scalar ready for `.backward()`.
+"""
 import torch
 import numpy as np
 from abc import ABC, abstractmethod

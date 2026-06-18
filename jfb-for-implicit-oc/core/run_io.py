@@ -1,36 +1,12 @@
 """
 core.run_io
 -----------
-Single source of truth for run identity and artifact filenames.
+Binds run identity (problem class, tag, timestamp) to artifact paths.
 
-A :class:`RunIO` instance binds together:
-
-* a problem class name (the canonical first level of the
-  ``results/<ProblemClassName>/`` tree),
-* a ``tag`` describing the kind of run (``"JFB"``, ``"FullAD"``, ...),
-* a stable ``run_id`` (defaults to a wall-clock timestamp at construction),
-* and the canonical filename templates for every artifact a training run
-  produces.
-
-The point is to keep the example runners free of any path or filename
-reasoning. They build a problem, build a policy, hand both to the
-trainer; the trainer constructs / receives a :class:`RunIO`; the
-:class:`RunIO` decides where every byte lands.
-
-Layout produced by a single training run::
-
-    results/<ProblemClassName>/
-    ├── training/
-    │   ├── best_policy_<stem>.pth
-    │   ├── history_<stem>.csv
-    │   ├── loss_curve_<stem>.png
-    │   └── training-plots/
-    │       └── rollout_<stem>_NNNN.png
-    └── rollouts/
-        ├── policy_rollout_<stem>.png
-        └── trajectory_<stem>.pth
-
-where ``<stem> = f"{tag}_{run_id}"``.
+`RunIO` owns all filename decisions — the trainer and runners never build
+paths themselves. Stem = f"{tag}_{run_id}". Artifacts land in:
+  results/<ProblemClassName>/training/   — checkpoint, history, loss curve, plots
+  results/<ProblemClassName>/rollouts/   — final rollout figure and trajectory tensor
 """
 
 from __future__ import annotations

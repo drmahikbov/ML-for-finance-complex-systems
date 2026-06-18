@@ -1,3 +1,12 @@
+"""
+models.Quadcopter
+-----------------
+Quadcopter (and multi-quadcopter) stabilisation as an ImplicitOC problem.
+
+State: 12D per vehicle (position, Euler angles, velocities, angular rates).
+Control: 4D (total thrust and three angular accelerations). Supports single-
+and multi-agent variants via `QuadcopterOC` and `MultiQuadcopterOC`.
+"""
 from ImplicitNets import ImplicitNetOC
 from ImplicitNets import Phi
 from ImplicitOC import ImplicitOC, TimeLike

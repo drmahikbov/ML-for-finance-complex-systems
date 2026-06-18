@@ -1,26 +1,12 @@
 #!/usr/bin/env python3
 """
-Plot JFB (implicit-net) rollouts for :class:`LiquidationPortfolioOC`.
+examples.explicit_ustar.plot_liquidation_jfb
+---------------------------------------------
+Plot JFB policy rollouts against the exact Almgren-Chriss BVP for
+LiquidationPortfolioOC. Trains a fresh policy by default or loads a checkpoint.
 
-Run **from the repository** (either cwd = ``jfb-for-implicit-oc`` or project root):
-
-    cd jfb-for-implicit-oc
     python plot_liquidation_jfb.py
-
-    # or
-    python jfb-for-implicit-oc/plot_liquidation_jfb.py
-
-**Default behaviour:** trains a fresh policy for ``--train-epochs`` (small run),
-then saves a six-panel figure (JFB vs exact BVP when ``γ=2``) via
-:class:`liquidation_benchmark.LiquidationBenchmark`.
-
-**Use a checkpoint** saved by :class:`OptimalControlTrainer` (``state_dict`` only):
-
-    python plot_liquidation_jfb.py --checkpoint results/LiquidationPortfolioOC/training/best_policy_JFB_<run_id>.pth
-
-You must use the **same** ``LiquidationPortfolioOC`` hyperparameters as training
-when loading a checkpoint (defaults below match ``liquidation_benchmark`` smoke
-settings so the exact reference lines up).
+    python plot_liquidation_jfb.py --checkpoint results/.../best_policy_JFB_*.pth
 """
 
 from __future__ import annotations

@@ -1,46 +1,12 @@
 """
 benchmarking.trajectory
 -----------------------
-Container for a single state/control trajectory produced by a reference
-solver or a rollout.
+Dataclass container for a state/control trajectory.
 
-Shape conventions
-~~~~~~~~~~~~~~~~~
-A :class:`Trajectory` can be either **deterministic** (a single path) or
-**stochastic** (a bundle of Monte-Carlo paths).  The distinction is made
-purely from the shape of the state array ``z``:
-
-============  ==============================  =============================
-component     deterministic                   stochastic
-============  ==============================  =============================
-``t``         ``(N,)``                        ``(N,)``
-``z``         ``(N, state_dim)``              ``(n_paths, N, state_dim)``
-``u``         ``(N-1, control_dim)`` or None  ``(n_paths, N-1, control_dim)``
-                                              or None
-============  ==============================  =============================
-
-The control array ``u`` is sampled on the **left endpoints** of the
-``N-1`` Euler intervals formed by ``t`` (i.e. the control active on
-``[t[i], t[i+1])`` sits at index ``i``).
-
-The ``cost`` field, when provided, is the realised total cost ``J``
-along the trajectory (mean across paths for stochastic shapes).  The
-``style`` dict is forwarded verbatim to matplotlib by
-:class:`benchmarking.plotter.BenchmarkPlotter`.
-
-Stochastic shapes are supported for forward-compatibility: no stochastic
-solver ships with this refactor, but the data container is ready for one.
-
-Numpy-only
-~~~~~~~~~~
-Trajectory payloads are stored as :class:`numpy.ndarray`.  Callers who
-hold :class:`torch.Tensor` data should move it to CPU and convert before
-constructing a Trajectory::
-
-    z_np = z_torch.detach().cpu().numpy()
-
-Keeping torch out of the data layer keeps the plotter, metrics and tests
-decoupled from the training stack.
+Deterministic: z (N, state_dim), u (N-1, control_dim). Stochastic bundle:
+z (n_paths, N, state_dim), u (n_paths, N-1, control_dim). Control u sits on
+the left endpoints of the Euler intervals. Payloads are numpy arrays only —
+convert torch tensors to numpy before constructing.
 """
 
 from __future__ import annotations

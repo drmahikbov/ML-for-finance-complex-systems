@@ -1,43 +1,12 @@
 """
-core-RL.Environment
+core_RL.Environment
 -------------------
 Abstract environment interface for the RL pipeline.
 
-Why this file exists
-~~~~~~~~~~~~~~~~~~~~
-In the original ``core/`` codebase, system dynamics ``f(t, z, u)`` are an
-abstract method on :class:`ImplicitOC`. The agent computes its rollout via
-``z = z + h * compute_f(t, z, u)``, and PyTorch autograd silently
-differentiates *through* the dynamics during ``total_cost.backward()``. That
-implicitly assumes the agent has access to ``f`` and its Jacobians — which is
-exactly the assumption we are dropping in the RL extension.
-
-In ``core-RL/`` the **only** object that knows the true dynamics is the
-``Environment``. The agent never queries the analytical ``f``; it sees only
-``env.step(z, u) -> z'``. This file defines that interface.
-
-What is here
-~~~~~~~~~~~~
-* :class:`Environment`            — abstract base class. One required method
-                                    (``step``), an optional ``reset``, and a
-                                    convenience batched rollout.
-* :class:`AnalyticalEnvironment`  — concrete subclass that wraps a callable
-                                    ``f`` (the kind of analytical dynamics that
-                                    a problem in ``models/`` already exposes).
-                                    Used in two ways:
-                                    1. Simulate the environment for our
-                                       experiments (the true ``f`` is hidden
-                                       from the agent because the agent only
-                                       sees ``env.step``);
-                                    2. Sanity-check the RL pipeline against
-                                       the known-dynamics baseline (run JFB on
-                                       the same problem with true Jacobians via
-                                       ``OracleJacobianEstimator``, see
-                                       :mod:`JacobianEstimator`).
-
-Concrete RL applications (real market data, gym-style environments, ...)
-implement :class:`Environment` directly without going through
-``AnalyticalEnvironment``.
+Two classes: `Environment` (abstract, one required `step` method + a batched
+`rollout` helper) and `AnalyticalEnvironment` (wraps a known `f` callable
+behind `step`, with `.detach()` to sever autograd through the dynamics).
+The agent only ever calls `step`; it never touches `f` directly.
 """
 
 from __future__ import annotations
@@ -52,8 +21,7 @@ class Environment(ABC):
     """Abstract environment.
 
     The contract is intentionally minimal: one ``step`` method that maps
-    ``(z, u)`` to ``z'`` deterministically (we will generalise to stochastic
-    transitions in Step 3 of the project).
+    ``(z, u)`` to ``z'`` deterministically.
 
     Parameters
     ----------
@@ -83,9 +51,7 @@ class Environment(ABC):
         self.dt = (t_final - t_initial) / nt
         self.device = device
 
-    # ------------------------------------------------------------------ #
-    # Required interface                                                 #
-    # ------------------------------------------------------------------ #
+    # Required interface
     @abstractmethod
     def step(self, z: torch.Tensor, u: torch.Tensor, t: float) -> torch.Tensor:
         """One environment step.
@@ -106,9 +72,7 @@ class Environment(ABC):
         """
         ...
 
-    # ------------------------------------------------------------------ #
-    # Convenience: batched rollout under a policy                        #
-    # ------------------------------------------------------------------ #
+    # Convenience: batched rollout under a policy
     @torch.no_grad()
     def rollout(
         self,

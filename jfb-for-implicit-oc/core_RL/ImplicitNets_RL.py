@@ -1,39 +1,15 @@
 """
-core-RL.ImplicitNets_RL
+core_RL.ImplicitNets_RL
 -----------------------
-RL-aware implicit policy network.
+Drop-in subclass of `ImplicitNetOC` for the RL setting.
 
-What changes vs ``core/ImplicitNets.py``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Overrides only `T`: uses `compute_grad_H_u_estimated` with an externally
+supplied `b_k` (estimated `∂f/∂u`) instead of the true analytical Jacobian.
+Everything else — FP loop, Anderson acceleration, control clamping, convergence
+tracking — is inherited unchanged.
 
-The original :class:`ImplicitNetOC` builds its fixed-point operator ``T`` by
-calling ``self.oc_problem.compute_grad_H_u(...)``, which in turn queries
-``compute_grad_f_u`` — the **true** Jacobian of the dynamics w.r.t. the
-control. In the RL setting that Jacobian is unknown and replaced by the
-estimate ``b_k`` produced by a :class:`JacobianEstimator`.
-
-We subclass :class:`ImplicitNetOC` and override exactly two things:
-
-* ``T`` — the fixed-point step. Uses ``oc_problem.compute_grad_H_u_estimated``
-  with ``self._current_b_k`` instead of ``compute_grad_H_u``.
-* ``set_step_jacobian`` — a setter the trainer calls *before* each forward
-  pass to tell the policy which ``b_k`` to use for the next FP iteration.
-
-Every other piece of the original ``ImplicitNetOC`` — the FP loop with
-optional Anderson acceleration, control limits, convergence tracking, and
-the ``tracked_iters`` differentiable tail used by JFB — is reused
-unchanged. That tail is what implements the "JFB inside the policy" half
-of our pipeline; the ``compute_loss_RL`` surrogate in
-:mod:`ImplicitOC_RL` implements the "JFB across the trajectory" half.
-
-Stateful contract
-~~~~~~~~~~~~~~~~~
-Because we don't want to modify the parent class's ``forward`` signature
-(it's referenced internally by Anderson, the FP loop, the convergence
-tracker, ...), we pass ``b_k`` to ``T`` via instance state. The trainer
-**must** call ``policy.set_step_jacobian(b_k)`` before each
-``policy(z, t)`` invocation. Failing to do so will raise — there is no
-safe default.
+The trainer must call `policy.set_step_jacobian(b_k)` before each
+`policy(z, t)` invocation; calling `T` without it raises at runtime.
 """
 
 from __future__ import annotations
@@ -63,9 +39,7 @@ class ImplicitNetOC_RL(ImplicitNetOC):
         # ``set_step_jacobian`` so misuse fails fast.
         self._current_b_k: torch.Tensor | None = None
 
-    # ------------------------------------------------------------------ #
-    # Setter the trainer / loss-routine calls before each step           #
-    # ------------------------------------------------------------------ #
+    # Setter the trainer / loss-routine calls before each step
     def set_step_jacobian(self, b_k: torch.Tensor) -> None:
         """Set the local control Jacobian to be used by the next FP run.
 
@@ -79,9 +53,7 @@ class ImplicitNetOC_RL(ImplicitNetOC):
         """Reset to ``None`` — useful between epochs to surface bugs early."""
         self._current_b_k = None
 
-    # ------------------------------------------------------------------ #
-    # Override only T                                                    #
-    # ------------------------------------------------------------------ #
+    # Override only T
     def T(self, u: torch.Tensor, x: torch.Tensor, t) -> torch.Tensor:
         """One gradient-ascent step on the **estimated** Hamiltonian.
 

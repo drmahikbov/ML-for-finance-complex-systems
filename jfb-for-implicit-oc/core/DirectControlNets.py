@@ -1,3 +1,10 @@
+"""
+core.DirectControlNets
+----------------------
+Direct-control baseline policy: outputs u = π(z, t) without any fixed-point
+iteration. Used to compare against implicit JFB methods. Uses very small weight
+initialisation (0.001×) to keep initial controls near zero.
+"""
 import torch
 import torch.nn as nn
 from ImplicitNets import Phi, DefaultPNet, ResNN

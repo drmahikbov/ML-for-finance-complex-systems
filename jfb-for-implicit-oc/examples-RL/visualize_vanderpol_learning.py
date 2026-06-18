@@ -1,3 +1,12 @@
+"""
+examples-RL.visualize_vanderpol_learning
+-----------------------------------------
+Render a GIF showing the VanDerPolOC_RL policy improving over training.
+
+Loads per-epoch checkpoints, rolls out on a fixed evaluation batch, and
+renders four panels per frame: phase portrait, policy heatmap at t=0, control
+signal, and cost distribution. Set METHOD = "rls" or "oracle".
+"""
 from __future__ import annotations
 
 import os

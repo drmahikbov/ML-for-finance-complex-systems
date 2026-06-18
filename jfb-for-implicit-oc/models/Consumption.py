@@ -1,3 +1,12 @@
+"""
+models.Consumption
+------------------
+Multi-dimensional consumption-savings problem with habit formation.
+
+State: z = (x, h₁, …, h_m) — wealth and habit vector. Control: u ∈ ℝ^m.
+Dynamics: dx/dt = rx − Σuᵢ, dh/dt = A u^η − B h^θ.
+Running cost: e^{-δt} Σ (uᵢ − hᵢ)^{1-γ}/(1-γ). Terminal cost: ε x(T)^{1-γ}/(1-γ).
+"""
 # from ImplicitOC import ImplicitOC
 from ImplicitOC import ImplicitOC, TimeLike
 import torch

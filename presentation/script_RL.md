@@ -59,7 +59,7 @@
 
 ---
 
-## 2.14: Algorithm summary (1min)
+## 2.8: Algorithm summary (1min)
 
 1. "Sample initial state from ρ."
 2. "Roll out in the environment."
@@ -72,11 +72,13 @@
 
 ---
 
-## 2.16 & 2.17: Benchmark problems (45sec)
+## 2.9 & 2.10: Benchmark problems (45sec)
 
 **Van der Pol (2.16):**
 
 - "Nonlinear oscillator, scalar control u acts as an external force, goal is to drive (x_1, x_2) to the origin."
+- "Chose 3 problems with increasing difficulty (diff control penalty + control coupling) to see wether our model can adapt well to more complex settings"
+- "first is explicit (hamiltonian can be solved for u), and the two others are implicit"
 
 **Portfolio (2.17):**
 
@@ -85,11 +87,13 @@
 
 ---
 
-## 2.21 & 2.22: Results (1min)
+## 2.11 to 2.214: Results (1min)
 
 **Van der Pol (2.21):**
 
-- "The RL-trained controller matches the **oracle** (which has full access to f). Convergence to the origin with no dynamics model."
+- "The RL-trained controller matches the **oracle** (which has full access to f) in all three problems. Convergence to the origin with no dynamics model."
+- "Left: evolution of the loss, Right: convergence to the origin"
+- "Autodiff method is slightly better, but our model could potentially outperform it the dimension was higher."
 
 **Portfolio (2.22):**
 
@@ -97,9 +101,12 @@
 - "Right: learned policy rollout, wealth trajectory."
 - "Mid-training snapshot at epoch 200 shows policy is already shaping correctly."
 
+- **Analytical wealth:** the true wealth is almost aligned on ours.
+- **Analytical policy:** the true policy ($\mu=0.10$, $r=0.03$) has a constant value of 0.85.
+
 ---
 
-## 2.23: Practical challenges (45 sec)
+## 2.15: Practical challenges (45 sec)
 
 - "**Locality**: RLS estimates become stale if rollouts drift."
 - "**Exploration**: we need enough perturbation σ to identify B_k."
@@ -107,7 +114,7 @@
 
 ---
 
-## 2.24: Outlook (30sec)
+## 2.16: Outlook (30sec)
 
 - "Same Gelphman pipeline: φ*θ → ∇φ*θ → u\*\_θ → J(θ)."
 - "The only structural change: f and ∇f are replaced by local estimates A_k, B_k."

@@ -1,35 +1,12 @@
 """
 benchmarking.diagnostics
 ------------------------
-Inner-fixed-point and policy diagnostic plots for trained JFB policies.
+Diagnostic plots for trained JFB policies.
 
-What this module gives you
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-* :func:`diagnostic_rollout` -- run one explicit-Euler rollout of the
-  given policy on a single ``z0`` while harvesting, **at every
-  timestep**, the inner-fixed-point depth, residual, the Hamiltonian
-  stationarity residual and the policy-network costate ``p_θ``. Returns
-  a :class:`benchmarking.Trajectory` whose ``meta`` carries those
-  arrays. The first timestep additionally records the per-iteration
-  residual trace of the inner FP solver.
-
-* :func:`diagnostic_panels` -- a 6-panel layout consuming the diagnostic
-  trajectory above. Pair with :class:`benchmarking.BenchmarkPlotter`.
-
-* :func:`liquidation_costate_vs_bvp_panels` -- liquidation-specific
-  overlay panels comparing the learned ``p_q(t), p_S(t)`` against the
-  exact-BVP solution. Adds two panels on top of the generic ones.
-
-Why a separate module?
-~~~~~~~~~~~~~~~~~~~~~~
-
-The standard :class:`benchmarking.BenchmarkPlotter` workflow draws
-state/control panels for *one or more* trajectories. The diagnostic
-plots are policy-specific (they need access to the policy and the
-problem to recompute the Hamiltonian residual / costate), and they
-*augment* the standard plots rather than replacing them, so they live
-in their own module to avoid bloating the core plotter.
+`diagnostic_rollout` rolls out a policy while recording per-step FP depth,
+residual, Hamiltonian stationarity, and costate. `diagnostic_panels` renders a
+6-panel layout from that data. `liquidation_costate_vs_bvp_panels` adds
+liquidation-specific costate overlays on top.
 """
 
 from __future__ import annotations

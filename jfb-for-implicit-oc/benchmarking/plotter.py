@@ -3,17 +3,9 @@ benchmarking.plotter
 --------------------
 Generic multi-panel comparison plotter.
 
-The :class:`BenchmarkPlotter` iterates over a list of
-:class:`~benchmarking.trajectory.Trajectory` objects and overlays each one
-on every :class:`Panel`.  Panels are fully data-agnostic -- the user
-supplies an ``extract`` callable that maps a trajectory to ``(x, y)``
-arrays -- so the same plotter can service any problem class.
-
-Band plots (mean ± 1 std over paths) are supported for stochastic
-trajectories; a single-path trajectory falls back to a regular line.
-
-The convenience factory :func:`almgren_chriss_panels` codifies the
-standard 4-panel layout used for the single-asset liquidation benchmark.
+`BenchmarkPlotter` overlays a list of `Trajectory` objects on each `Panel`.
+Panels are data-agnostic — an `extract` callable maps a trajectory to (x, y).
+Stochastic trajectories get band plots; single-path trajectories get lines.
 """
 
 from __future__ import annotations

@@ -1,20 +1,9 @@
 """
 benchmarking.gradient_checks
 ----------------------------
-Taylor-convergence / finite-difference checks for the analytical
-``compute_grad_f_u`` of an :class:`ImplicitOC` problem.
-
-This module intentionally lives outside the solver / plotter hierarchy so
-that adding more gradient tests later does not clutter
-:mod:`benchmarking.solvers`.
-
-Bug fix vs. legacy code
-~~~~~~~~~~~~~~~~~~~~~~~
-The old :meth:`LiquidationBenchmark.gradient_check` summed the
-directional derivative across the whole batch, which masks direction
-cancellation and is **not** a proper single-point Taylor expansion.  This
-version evaluates the derivative at a **single** ``(z, u)`` sample (batch
-index 0 by default) and returns a clean log-log curve vs. ``h``.
+Taylor-convergence check for `compute_grad_f_u` via finite differences.
+Evaluates the directional derivative at a single (z, u) sample (batch index 0)
+and returns a log-log error curve vs. step size h.
 """
 
 from __future__ import annotations

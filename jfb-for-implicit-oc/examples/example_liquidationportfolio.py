@@ -1,20 +1,9 @@
 """
-Almgren-Chriss style liquidation: train the JFB policy and let the trainer
-write every artifact to ``results/LiquidationPortfolioOC/``.
-
-This file is the *declarative* layer of the workflow. It only:
-
-1. instantiates a :class:`LiquidationPortfolioOC` problem with concrete
-   parameters,
-2. wires up the :class:`ImplicitNetOC` policy and an optimizer / scheduler,
-3. hands them to :class:`OptimalControlTrainer` and calls ``train``.
-
-Everything path- or filename-related lives in
-:class:`core.run_io.RunIO` and :func:`core.paths.results_dir`. Every plot
-is produced by :class:`benchmarking.BenchmarkPlotter` via the model's
-``panels()`` and ``to_trajectory()`` methods. Adding a new model means
-copying this file, swapping the problem class, and trusting the trainer
-to write the standard six-artifact bundle.
+examples.example_liquidationportfolio
+--------------------------------------
+Train the JFB implicit policy on the Almgren-Chriss liquidation problem.
+Artifacts go to results/LiquidationPortfolioOC/ via RunIO. Set full_AD=True
+to train with full autodiff (BPTT) as a baseline.
 """
 
 import os

@@ -1,46 +1,13 @@
 """
-core-RL.OptimalControlTrainer_RL
---------------------------------
-Trainer for the RL-flavoured implicit-Hamiltonian pipeline.
+core_RL.OptimalControlTrainer_RL
+---------------------------------
+Subclass of `OptimalControlTrainer` for the RL pipeline.
 
-What changes vs ``core/OptimalControlTrainer.py``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The original :class:`OptimalControlTrainer` does
-
-    total_cost, ... = self.oc_problem.compute_loss(self.policy, z0)
-    total_cost.backward()
-    self.optimizer.step()
-
-This works because in the known-dynamics setting, ``compute_loss``
-* drives the rollout via the analytical ``compute_f``, and
-* PyTorch autograd silently propagates the gradient through both the
-  rollout and the implicit policy's last few FP iterations.
-
-In the RL setting we have to break that autograd-through-the-rollout
-path: we step an :class:`Environment` instead of ``compute_f``, and we
-build the JFB-with-estimates gradient explicitly in
-:func:`ImplicitOC_RL.compute_loss_RL`. This trainer therefore:
-
-1. owns an :class:`Environment` and a :class:`JacobianEstimator` in
-   addition to a policy, an optimizer, and a scheduler;
-2. delegates one full epoch to ``compute_loss_RL`` and backwards the
-   *surrogate* it returns (rather than the cost itself);
-3. logs three new diagnostics — mean linear-model residual, jac
-   estimator condition number, eventually the angle between the
-   JFB-with-estimates gradient and the oracle JFB gradient when an
-   :class:`OracleJacobianEstimator` baseline is available;
-4. routes plotting through ``env.rollout`` instead of
-   ``oc_problem.generate_trajectory(self.policy, z0, ...)``, because
-   the latter would call ``compute_f`` (which doesn't exist on
-   :class:`ImplicitOC_RL`).
-
-Reuse
-~~~~~
-The whole post-training artifact bundle (RunIO, loss curves, policy
-checkpoint, trajectory tensor, training-plot dispatch) is **untouched**.
-We inherit from :class:`OptimalControlTrainer` and override only the
-training-step / plotting-dispatch methods.
+Owns an `Environment` and a `JacobianEstimator` in addition to the policy and
+optimizer. Each epoch calls `compute_loss_RL`, backpropagates the surrogate,
+and decays the exploration noise. Plotting routes through `env.rollout` rather
+than the analytical `compute_f`. The post-training artifact bundle (RunIO, loss
+curves, checkpoint, trajectory) is fully inherited.
 """
 
 from __future__ import annotations
@@ -115,9 +82,7 @@ class OptimalControlTrainer_RL(OptimalControlTrainer):
             if k not in self.history:
                 self.history[k] = []
 
-    # ------------------------------------------------------------------ #
     # The single training step                                           #
-    # ------------------------------------------------------------------ #
     def rl_step(self, z0: torch.Tensor) -> dict:
         """One epoch's worth of forward rollout + backward adjoint +
         JFB-surrogate optimisation.
@@ -174,9 +139,7 @@ class OptimalControlTrainer_RL(OptimalControlTrainer):
     def train_epoch(self, z0: torch.Tensor) -> dict:
         return self.rl_step(z0)
 
-    # ------------------------------------------------------------------ #
     # Plotting dispatch — go through env, not compute_f                  #
-    # ------------------------------------------------------------------ #
     def _plot_rollout(self, z_traj: torch.Tensor, save_path: str) -> None:
         """Same panels API as the parent, but the trajectory was produced
         by ``env.rollout`` instead of an analytical Euler march.
@@ -190,9 +153,7 @@ class OptimalControlTrainer_RL(OptimalControlTrainer):
                 z_traj.detach(), save_path=save_path
             )
 
-    # ------------------------------------------------------------------ #
     # Override the part of ``train`` that calls ``generate_trajectory``  #
-    # ------------------------------------------------------------------ #
     # The parent's ``train`` and ``_finalize`` methods invoke
     # ``self.oc_problem.generate_trajectory(self.policy, z0, self.oc_problem.nt,
     # return_full_trajectory=True)`` — which in core/ uses compute_f. Our
@@ -323,9 +284,7 @@ class OptimalControlTrainer_RL(OptimalControlTrainer):
         self._finalize_rl(best_loss=best_loss, verbose=verbose, z0_for_rollout=z0)
         return self.history
 
-    # ------------------------------------------------------------------ #
     # Override _finalize to use env rollout instead of compute_f         #
-    # ------------------------------------------------------------------ #
     def _finalize_rl(
         self, best_loss: float, verbose: bool, z0_for_rollout: torch.Tensor
     ) -> None:

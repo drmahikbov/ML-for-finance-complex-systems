@@ -1,40 +1,15 @@
 """
-Template runner for a new optimal-control problem.
+examples.example_TEMPLATE
+--------------------------
+Copy-paste starting point for a new optimal-control problem runner.
 
-Copy-paste workflow
-~~~~~~~~~~~~~~~~~~~
+Steps: (1) import your concrete ImplicitOC subclass from models/;
+(2) fill in the problem constructor with your hyperparameters;
+(3) optionally tune Phi width, control limits, optimizer, epochs.
+The trainer writes the six-artifact bundle to results/<MyProblemOC>/ automatically.
 
-1. Copy this file to ``examples/example_<myproblem>.py``.
-2. Resolve **TODO[1]**: import your concrete subclass of :class:`ImplicitOC`
-   from ``models/``.
-3. Resolve **TODO[2]**: fill in the constructor call with your concrete
-   hyperparameters (dynamics, costs, IC distribution). Make sure
-   ``state_dim`` / ``control_dim`` (set inside the class's ``__init__``)
-   match what your dynamics expect.
-4. (Optional) tweak ``Phi`` width, ``ImplicitNetOC`` control limits,
-   optimizer, LR scheduler, ``num_epochs``, ``plot_frequency`` if the
-   defaults below are not appropriate.
-5. Run it::
-
-       cd jfb-for-implicit-oc
-       python examples/example_<myproblem>.py
-
-   The trainer writes the canonical six-artifact bundle under
-   ``results/<MyProblemOC>/`` automatically — there is nothing else for
-   this file to do.
-
-Strict invariants this file MUST preserve
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-(See the "Smell test" section in the project README.)
-
-* No ``os.path.join`` calls.
-* No ``save_path=`` literals.
-* No ``save_name`` arguments.
-* No ``matplotlib`` code.
-
-If you find yourself adding any of the above, the right fix is to extend
-:class:`core.run_io.RunIO`, not to bypass it from the runner.
+No os.path.join, no save_path literals, no matplotlib code — all of that
+belongs in RunIO and BenchmarkPlotter.
 """
 
 import os

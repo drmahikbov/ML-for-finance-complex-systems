@@ -1,35 +1,10 @@
 """
 examples-RL.portfolio_optimization_RL
--------------------------------------
-Run the Pontryagin-RL × implicit-Hamiltonian pipeline on the Merton-type
-portfolio-optimisation problem of §4 of the Pontryagin-RL notes.
-
-What this runner does
-~~~~~~~~~~~~~~~~~~~~~
-
-1. Instantiates :class:`PortfolioOC_RL` with concrete parameters
-   (``λ = 0.5``, hidden μ, r, IC distribution).
-2. Builds an :class:`AnalyticalEnvironment` that wraps the *true* dynamics
-   ``f(W, π) = rW + π(μ - r)W`` behind ``env.step``. The agent never
-   queries ``f`` directly; it only sees ``env.step``.
-3. Builds an :class:`RLSJacobianEstimator` for the data-driven local
-   Jacobians. Forgetting factor ``α_rls = 0.9`` per PDF §5.3.
-4. Wires up the value-function network ``Phi``, the implicit policy
-   :class:`ImplicitNetOC_RL`, an Adam optimiser, and a
-   ``ReduceLROnPlateau`` scheduler.
-5. Hands them to :class:`OptimalControlTrainer_RL` and trains.
-
-This file is purely declarative — there are no path strings, no filename
-templates. The trainer's :class:`RunIO` writes the standard six-artifact
-bundle to ``results/PortfolioOC_RL/``.
-
-Sanity-check workflow (recommended early; see ``core-RL/README.md``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Set ``USE_ORACLE_JACOBIAN = True`` to swap the RLS estimator for the
-:class:`OracleJacobianEstimator` that queries the true ∂f/∂z, ∂f/∂u. The
-resulting loss curve should match the known-dynamics JFB pipeline to
-numerical noise; if it doesn't, the bug is in the surrogate-construction
-code, not in the Jacobian estimation.
+--------------------------------------
+Train a JFB-RL implicit Hamiltonian policy on the Merton portfolio problem.
+True dynamics are hidden behind AnalyticalEnvironment; the agent only sees
+env.step. Set USE_ORACLE_JACOBIAN = True to swap RLS for analytical Jacobians
+as a sanity check (should reproduce the known-dynamics JFB result).
 """
 
 from __future__ import annotations

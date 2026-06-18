@@ -1,3 +1,10 @@
+"""
+examples.example_multiConsumption
+----------------------------------
+Train the JFB implicit policy on the multi-dimensional consumption-savings
+problem with habit formation (ConsumptionSavingsOC). Set full_AD=True to
+switch to full autodiff (BPTT) as a baseline.
+"""
 import torch, numpy as np, sys, time
 from Consumption import ConsumptionSavingsOC
 from ImplicitNets            import Phi

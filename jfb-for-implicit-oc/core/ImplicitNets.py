@@ -1,3 +1,13 @@
+"""
+core.ImplicitNets
+-----------------
+Neural network components for the JFB implicit optimal-control pipeline.
+
+`ResNN`: residual backbone with antiderivative-tanh activations (twice
+differentiable). `Phi`: costate/value-function network. `ImplicitNetOC`:
+implicit policy that runs a fixed-point iteration T(u) = u − α ∇_u H at each
+time step, differentiating only through the last `tracked_iters` iterations (JFB).
+"""
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod

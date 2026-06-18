@@ -1,3 +1,13 @@
+"""
+examples-RL.animation_vanderpol
+---------------------------------
+Animate the Hard Gain Van der Pol policy improving over training epochs.
+
+Loads per-epoch checkpoints from results/HardGainVanDerPolOC_RL/checkpoints/,
+rolls out a fixed initial condition under each, and assembles the results into
+a two-panel animation (physical view + phase portrait). Saves as a GIF when
+SAVE_GIF is True.
+"""
 from __future__ import annotations
 
 import os

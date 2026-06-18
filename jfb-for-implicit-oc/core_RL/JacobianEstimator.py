@@ -1,46 +1,18 @@
 """
-core-RL.JacobianEstimator
+core_RL.JacobianEstimator
 -------------------------
-Per-time-step local linearisation of the unknown dynamics.
+Per-time-step local linearisation of unknown dynamics f.
 
-Why this file exists
-~~~~~~~~~~~~~~~~~~~~
-The JFB-with-estimates gradient (eqn. 23 of the Pontryagin-RL notes) needs,
-at every time step ``k`` of every trajectory, the local Jacobians
+Provides `a_k = ∂f/∂z` (B, n, n) and `b_k = (∂f/∂u)ᵀ` (B, m, n) at each
+trajectory step, used by the implicit policy and the backward adjoint pass.
+Estimators store continuous-time Jacobians; the RLS update works in
+discrete-time internally and strips the I/Δt before storing.
 
-    a_k = ∂f / ∂z   (shape (state_dim, state_dim) — standard Jacobian)
-    b_k = (∂f / ∂u)ᵀ at our shape convention   (shape (control_dim, state_dim))
-
-These show up in **two** places:
-
-* **Inside the implicit policy** ``T̂_k(u; z) = u - α (∇_u L + b_k @ p)``.
-  ``b_k`` is what replaces ``compute_grad_f_u`` inside
-  :func:`ImplicitOC.compute_grad_H_u`.
-* **Inside the data-driven backward adjoint pass**
-  ``p_k = p_{k+1} + Δt (a_kᵀ @ p_{k+1} + ∇_z L_k)``.
-  ``a_k`` is what replaces ``compute_grad_f_z``.
-
-This module gives an abstract base + two concrete implementations.
-
-Shape conventions (matched to ``core/ImplicitOC.compute_grad_f_*``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-* ``a_k``  ``(B, n, n)`` with ``a_k[:, i, j] = ∂f_i / ∂z_j``  (standard).
-* ``b_k``  ``(B, m, n)`` with ``b_k[:, i, j] = ∂f_j / ∂u_i``  (transpose layout
-                                                              — matches
-                                                              ``compute_grad_f_u``).
-
-Continuous- vs discrete-time
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-The estimators store **continuous-time** Jacobians ``a_k, b_k``. For the RLS
-update we transform internally::
-
-    A_disc = I + Δt · a_k         (Jacobian of F = z + Δt·f w.r.t. z)
-    B_disc = Δt · b_k             (Jacobian of F w.r.t. u)
-
-The regression directly fits ``A_disc, B_disc``; we strip the ``I`` /
-``Δt`` before storing. The rest of the code (the policy and the adjoint
-pass) sees continuous-time Jacobians, which is consistent with the
-existing ``compute_grad_f_*`` semantics in ``core/``.
+Two concrete implementations:
+- `RLSJacobianEstimator`: block RLS with forgetting factor, one shared
+  estimate per time step across the full batch.
+- `OracleJacobianEstimator`: queries true analytical Jacobians; only for
+  sanity-checking the rest of the pipeline.
 """
 
 from __future__ import annotations
@@ -114,9 +86,7 @@ class JacobianEstimator(ABC):
     def reset(self) -> None:
         """Optional: reset all estimator state. Default no-op."""
 
-    # ------------------------------------------------------------------ #
-    # Diagnostics — used by the trainer to log estimation health         #
-    # ------------------------------------------------------------------ #
+    # Diagnostics — used by the trainer to log estimation health
     def linear_model_residual(
         self, k: int, z_k: torch.Tensor, u_k: torch.Tensor, z_kp1: torch.Tensor
     ) -> torch.Tensor:
@@ -145,11 +115,8 @@ class JacobianEstimator(ABC):
         return (df_pred - df_actual).norm(dim=1).mean()
 
 
-# ============================================================================ #
-# Concrete: recursive least squares                                            #
-# ============================================================================ #
 
-
+# Concrete: recursive least squares
 class RLSJacobianEstimator(JacobianEstimator):
     r"""Block-RLS estimator with a forgetting factor.
 
@@ -269,11 +236,7 @@ class RLSJacobianEstimator(JacobianEstimator):
         return a_k.unsqueeze(0), b_k.unsqueeze(0)
 
 
-# ============================================================================ #
-# Concrete: oracle (uses true f's analytical Jacobians) — sanity-check only    #
-# ============================================================================ #
-
-
+# Concrete: oracle (uses true f's analytical Jacobians) — sanity-check only
 class OracleJacobianEstimator(JacobianEstimator):
     """Estimator that *cheats* by querying the true dynamics' analytical
     Jacobians. Used only to validate that the rest of the RL pipeline (env

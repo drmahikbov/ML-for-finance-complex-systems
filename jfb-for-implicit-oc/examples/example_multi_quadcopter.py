@@ -1,3 +1,10 @@
+"""
+examples.example_multi_quadcopter
+-----------------------------------
+Train the JFB implicit policy on the multi-quadcopter formation problem
+(MultiQuadcopterOC). Set full_AD_mode=True for full autodiff comparison.
+Results logged to results/MultiQuadcopterOC/training/.
+"""
 import torch
 import numpy as np
 import argparse

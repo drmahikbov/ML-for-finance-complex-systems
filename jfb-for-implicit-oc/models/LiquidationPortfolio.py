@@ -1,3 +1,12 @@
+"""
+models.LiquidationPortfolio
+----------------------------
+Single-asset Almgren-Chriss liquidation as an ImplicitOC problem.
+
+State: z = (q, S, X) — inventory, impacted price, cash. Control: u — sell rate.
+Dynamics: dq/dt = −u, dS/dt = −κu, dX/dt = Su − η(u²+ε)^{γ/2}.
+Terminal cost: −X(T) + α q(T)².
+"""
 from __future__ import annotations
 
 from typing import List

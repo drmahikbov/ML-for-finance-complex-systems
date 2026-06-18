@@ -3,18 +3,9 @@ core.log_format
 ---------------
 ANSI-colour helpers for the trainer's per-epoch console output.
 
-The :class:`EpochColourizer` keeps small rolling histories of recent
-loss / grad-norm / time-per-epoch values, then exposes a single
-:meth:`colourize` method that wraps a numeric field in an ANSI escape
-based on a per-field rule.
-
-Colour palette
-~~~~~~~~~~~~~~
-- **red**    -- catastrophic / NaN / divergence
-- **yellow** -- 3-10x worse than typical
-- **green**  -- healthy / better than typical
-- **cyan**   -- structural identifiers (epoch number)
-- **magenta**-- structural events (lr scheduler dropped)
+`EpochColourizer` keeps rolling histories of loss / grad-norm / time and
+colours each field by trend: red = divergence/NaN, yellow = degraded,
+green = healthy, cyan = epoch number, magenta = lr drop events.
 """
 
 from __future__ import annotations

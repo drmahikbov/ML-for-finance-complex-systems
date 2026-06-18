@@ -3,18 +3,9 @@ benchmarking.paths
 ------------------
 Output directory helpers for benchmark figures.
 
-Two environment variables are honored, in the following priority order:
-
-1. ``LIQUIDATION_BENCHMARK_PNG_DIR`` -- legacy variable, preserved for
-   backwards compatibility with code that already sets it.
-2. ``BENCHMARK_PNG_DIR`` -- generic variable introduced with the
-   :mod:`benchmarking` subpackage.
-
-If neither is set the directory defaults to ``<package_parent>/results_benchmark/``
-where ``<package_parent>`` is the directory containing the ``benchmarking``
-package (i.e. the ``jfb-for-implicit-oc`` folder).  Callers (notably the
-:mod:`liquidation_benchmark` shim) can override the default via the
-``default_dir`` argument of :func:`benchmark_png_dir`.
+Resolution order: env var `LIQUIDATION_BENCHMARK_PNG_DIR` (legacy), then
+`BENCHMARK_PNG_DIR`, then the `default_dir` argument, then
+`<package_parent>/results/benchmark/`.
 """
 
 from __future__ import annotations

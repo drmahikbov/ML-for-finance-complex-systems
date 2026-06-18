@@ -1,45 +1,12 @@
 """
-liquidation_benchmark.py
-------------------------
-Backwards-compatibility shim for :class:`LiquidationBenchmark`.
+examples.explicit_ustar.liquidation_benchmark
+----------------------------------------------
+Backwards-compatibility shim exposing the legacy `LiquidationBenchmark` API
+(plot_comparison, error_report, etc.) over the `benchmarking` package.
 
-The benchmarking machinery has been extracted into the reusable
-:mod:`benchmarking` subpackage.  This module now provides a thin
-wrapper that preserves the legacy public API -- ``plot_comparison``,
-``error_report``, ``plot_exact_trajectories``, ``plot_training_history``,
-``gradient_check``, ``solve_exact`` -- so existing runner scripts keep
-working unchanged.
-
-New code should prefer the explicit API::
-
-    from benchmarking import (
-        Trajectory, AlmgrenChrissBVPSolver, JFBPolicyRollout,
-        BenchmarkPlotter, almgren_chriss_panels,
-    )
-
-CLOSED-FORM SOLUTION (γ=2 case)
----------------------------------
-With γ=2 the smoothed impact term η(u²+ε)^(γ/2) = η(u²+ε) has a constant
-second derivative in u, making ∂H/∂u=0 linear in u.
-
-Hamiltonian (framework sign: H = L + p^T f):
-    H = ½σ²q² + p_q(-u) + p_S(-κu) + p_X(Su - η(u²+ε))
-
-Terminal condition ∂G/∂z → p_q(T)=2αq(T), p_S(T)=0, p_X(T)=−1.
-Since ṗ_X = −∂H/∂X = 0, we have p_X(t) ≡ −1 for all t, giving:
-
-    u*(t) = (-p_q - κp_S - S) / (2η)         [γ=2 closed form]
-
-See :class:`benchmarking.solvers.AlmgrenChrissBVPSolver` for the actual
-solver implementation.
-
-PNG output directory
---------------------
-Benchmark figures are written under ``results_liquidation_benchmark/``
-next to this file by default.  Set the environment variable
-``LIQUIDATION_BENCHMARK_PNG_DIR`` to an absolute path to use a different
-folder (it is created if missing).  The generic ``BENCHMARK_PNG_DIR``
-variable from :mod:`benchmarking.paths` is also honored.
+New code should import directly from `benchmarking`. The γ=2 closed-form
+optimum u*(t) = (−p_q − κ p_S − S) / (2η) is provided by
+`AlmgrenChrissBVPSolver`.
 """
 
 from __future__ import annotations
