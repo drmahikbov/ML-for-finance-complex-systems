@@ -85,6 +85,9 @@ class LiquidationPortfolioOC(ImplicitOC):
         device="cpu",
         alphaHJB=(0.0, 0.0),
         alphaadj=(0.0, 0.0),
+        sigma_S=0.0,
+        n_hutch=1,
+        noise_seed=None,
     ):
         # OC state: (q_1..q_n, S_1..S_n) ∈ R^{2n}. The cash account X is NOT
         # part of the OC state — it is integrated separately by the observer
@@ -164,6 +167,48 @@ class LiquidationPortfolioOC(ImplicitOC):
         self.sigma = _to_square_matrix(sigma, n_assets, device, "sigma")
         self.kappa = _to_square_matrix(kappa, n_assets, device, "kappa")
         self.eta = _to_asset_vector(eta, n_assets, device, "eta")
+
+        # ------------------------------------------------------------------
+        # Price diffusion (stochastic extension): dS = -kappa u dt + sigma_S dW.
+        # ------------------------------------------------------------------
+        # IMPORTANT: ``sigma_S`` is the price-volatility *diffusion factor*
+        # (the coefficient multiplying dW), kept strictly distinct from
+        # ``self.sigma`` above, which is the inventory-risk covariance that
+        # enters the running cost L' = 1/2 q^T Sigma q. ``sigma_S`` enters
+        # ONLY the state SDE and hence the trace term 1/2 Tr(Sigma_S Hess phi)
+        # of the stochastic HJB. Unlike the "sigma" branch of the helpers,
+        # this value is used directly (NOT squared) because it is the
+        # Cholesky-style factor L with L L^T = price covariance.
+        #
+        # Accepted forms (mirrors _to_square_matrix but without squaring):
+        #   scalar  -> sigma_S * I_n
+        #   vector  -> diag(sigma_S)
+        #   matrix  -> used directly as the (n_assets x n_assets) factor
+        sig_S = torch.as_tensor(sigma_S, dtype=torch.float32, device=device)
+        if sig_S.ndim == 0:
+            self.sigma_S = sig_S * torch.eye(n_assets, dtype=torch.float32, device=device)
+        elif sig_S.ndim == 1 and sig_S.numel() == n_assets:
+            self.sigma_S = torch.diag(sig_S)
+        elif sig_S.ndim == 2 and tuple(sig_S.shape) == (n_assets, n_assets):
+            self.sigma_S = sig_S
+        else:
+            raise ValueError(
+                f"sigma_S must be a scalar, a vector of length {n_assets}, "
+                f"or a square matrix of shape ({n_assets}, {n_assets})"
+            )
+
+        # One Brownian motion per asset price.
+        self.n_brownian = n_assets
+        # Default Hutchinson probe count for the trace-of-Hessian estimator.
+        self.n_hutch = int(n_hutch)
+
+        # Optional dedicated RNG for reproducible Brownian increments / probes.
+        self.noise_seed = noise_seed
+        if noise_seed is not None:
+            self.noise_generator = torch.Generator(device=device)
+            self.noise_generator.manual_seed(int(noise_seed))
+        else:
+            self.noise_generator = None
 
 
         # Terminal penalty weight on leftover inventory (with -X term in G).
@@ -345,6 +390,51 @@ class LiquidationPortfolioOC(ImplicitOC):
         grad = torch.zeros(batch, self.state_dim, self.state_dim, device=z.device)
 
         return grad[0] if squeeze else grad
+
+    # ------------------------------------------------------------------
+    # Stochastic price dynamics: additive, control-independent diffusion
+    # ------------------------------------------------------------------
+    # dq_i = -u_i dt                              (deterministic inventory)
+    # dS_i = -kappa_i u_i dt + (sigma_S dW)_i     (stochastic price)
+    #
+    # The diffusion is supported ONLY on the price block of z = (q, S); the
+    # inventory block carries no noise. Because sigma_S does not depend on u,
+    # the first-order condition d_u H = 0 is unchanged, so the closed-form
+    # u* and the FP contractivity (2 eta) are identical to the deterministic
+    # case — only the HJB picks up 1/2 Tr(Sigma_S Hess_{SS} phi).
+    def has_diffusion(self) -> bool:
+        """True iff price volatility is switched on (any nonzero sigma_S)."""
+        return bool(torch.any(self.sigma_S != 0).item())
+
+    def compute_sigma(
+        self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
+    ) -> torch.Tensor:
+        """Diffusion matrix sigma(t, z, u) of shape (batch, 2n, n).
+
+        Block layout (state order [q_1..q_n, S_1..S_n], Brownian dim n):
+
+            rows   0 .. n-1   (q-block) : 0           (no inventory noise)
+            rows   n .. 2n-1  (S-block) : sigma_S     (price diffusion factor)
+
+        Control-independent (``u`` ignored). Constant in z for the canonical
+        Almgren-Chriss price model.
+        """
+        if z.dim() == 1:
+            z = z.unsqueeze(0)
+            squeeze = True
+        else:
+            squeeze = False
+
+        batch = z.shape[0]
+        n = self.n_assets
+        sigma = torch.zeros(
+            batch, self.state_dim, self.n_brownian, device=z.device, dtype=z.dtype
+        )
+        # Broadcast the (n x n) price-diffusion factor across the batch into
+        # the S-block rows.
+        sigma[:, n:2 * n, :] = self.sigma_S.to(dtype=z.dtype, device=z.device).unsqueeze(0)
+
+        return sigma[0] if squeeze else sigma
 
     # ------------------------------------------------------------------
     # State gradient of the running cost — needed because L' now depends
@@ -823,8 +913,15 @@ class LiquidationPortfolioOC(ImplicitOC):
                 curr = u[:, :, i]
             else:
                 curr = u(traj[:, :, i], t)
-            traj[:, :, i + 1] = traj[:, :, i] + dt * self.compute_f(
-                t, traj[:, :, i], curr
+            # Euler-Maruyama: drift + sqrt(dt) sigma dW. The increment is
+            # zero for the deterministic case (sigma_S = 0), so this stays
+            # bit-for-bit identical to explicit Euler when noise is off.
+            traj[:, :, i + 1] = (
+                traj[:, :, i]
+                + dt * self.compute_f(t, traj[:, :, i], curr)
+                + self.diffusion_increment(
+                    t, traj[:, :, i], curr, dt, generator=self.noise_generator
+                )
             )
             if return_cash:
                 x_traj[:, :, i + 1] = x_traj[:, :, i] + dt * self.compute_cash_flow(

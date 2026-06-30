@@ -20,6 +20,7 @@ from .solvers import (
     AlmgrenChrissBVPSolver,
     AlmgrenChrissClosedForm,
     JFBPolicyRollout,
+    monte_carlo_policy_band,
 )
 from .policies import LearnedCostatePolicy
 from .plotter import (
@@ -45,6 +46,7 @@ __all__ = [
     "AlmgrenChrissBVPSolver",
     "AlmgrenChrissClosedForm",
     "JFBPolicyRollout",
+    "monte_carlo_policy_band",
     "LearnedCostatePolicy",
     "BenchmarkPlotter",
     "Panel",

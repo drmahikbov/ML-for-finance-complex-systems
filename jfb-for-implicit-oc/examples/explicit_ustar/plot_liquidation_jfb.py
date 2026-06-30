@@ -284,6 +284,33 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--q0-max", type=float, nargs="+", default=[1.5])
     p.add_argument("--S0",     type=float, nargs="+", default=[1.0])
     p.add_argument("--X0",     type=float, default=0.0)
+    # ------------------------------------------------------------------ #
+    # Stochastic price extension (state-only, control-independent noise). #
+    # The dynamics become dS = -kappa u dt + sigma_S dW; dq = -u dt stays #
+    # deterministic. sigma_S is the price *volatility* (diffusion factor),#
+    # kept distinct from --sigma (the inventory-risk covariance in L).    #
+    #                                                                      #
+    # DEFAULT sigma_S = 0.0  =>  fully DETERMINISTIC, byte-for-byte the    #
+    # same run as before. Any positive --sigma-S flips the whole pipeline  #
+    # to stochastic: Euler-Maruyama rollouts, the Hutchinson trace term in #
+    # the HJB diagnostic, and (for the same-axes plot) Monte-Carlo bands.  #
+    # ------------------------------------------------------------------ #
+    p.add_argument("--sigma-S", type=float, nargs="+", default=[0.0],
+                   help="Price volatility sigma_S per asset (diffusion on S). "
+                        "Scalar broadcasts to all assets. 0.0 (default) = "
+                        "deterministic; > 0 = stochastic dynamics.")
+    p.add_argument("--n-hutch", type=int, default=1,
+                   help="Hutchinson probe vectors for the Tr(Sigma Hess phi) "
+                        "estimator in the stochastic HJB term (default 1). "
+                        "Ignored when sigma_S = 0.")
+    p.add_argument("--n-paths", type=int, default=1,
+                   help="Monte-Carlo Brownian paths for the plotted rollout "
+                        "(default 1). >1 with sigma_S>0 renders mean +/- 1 std "
+                        "bands in the same-axes figure. Ignored when "
+                        "sigma_S = 0.")
+    p.add_argument("--noise-seed", type=int, default=None,
+                   help="Seed for the Brownian increments (reproducible SDE "
+                        "paths). Defaults to --seed when not given.")
     return p.parse_args()
 
 
@@ -387,7 +414,14 @@ def build_problem(args: argparse.Namespace, device: str) -> LiquidationPortfolio
     q0_min = _broadcast(args.q0_min, n, "q0-min")
     q0_max = _broadcast(args.q0_max, n, "q0-max")
     S0     = _broadcast(args.S0,     n, "S0")
-    return LiquidationPortfolioOC(
+    # Price volatility (stochastic extension). Broadcast like the other
+    # per-asset params; an all-zero vector keeps the problem deterministic.
+    sigma_S = _broadcast(getattr(args, "sigma_S", [0.0]), n, "sigma-S")
+    # noise_seed defaults to the global --seed for reproducible SDE paths.
+    noise_seed = getattr(args, "noise_seed", None)
+    if noise_seed is None and not getattr(args, "no_seed", False):
+        noise_seed = getattr(args, "seed", None)
+    prob = LiquidationPortfolioOC(
         batch_size=args.batch_size,
         t_initial=0.0,
         t_final=args.t_final,
@@ -406,7 +440,11 @@ def build_problem(args: argparse.Namespace, device: str) -> LiquidationPortfolio
         device=device,
         alphaHJB=(args.alpha_hjb_run, args.alpha_hjb_fin),
         alphaadj=(args.alpha_adj_run, args.alpha_adj_fin),
+        sigma_S=tuple(sigma_S),
+        n_hutch=getattr(args, "n_hutch", 1),
+        noise_seed=noise_seed,
     )
+    return prob
 
 
 def build_policy(prob: LiquidationPortfolioOC, device: str,
@@ -787,6 +825,8 @@ def plot_best_policy_same_axes(
     label="Best policy",
     include_bvp=True,
     path_index=0,
+    n_paths=1,
+    noise_seed=None,
 ):
     """
     Reload best policy from trainer checkpoint and plot q_i, u_i, S_i, X
@@ -796,6 +836,15 @@ def plot_best_policy_same_axes(
     Method difference:
         - Best policy: solid line
         - Exact BVP: dashed line
+
+    Stochastic mode
+    ---------------
+    When ``prob.has_diffusion()`` and ``n_paths > 1``, the learned policy is
+    rolled out over ``n_paths`` Euler-Maruyama Brownian paths. The figure
+    then shows the **mean** trajectory per asset, with a **mean +/- 1 std**
+    band on the price ``S_i(t)`` and cash ``X(t)`` panels (inventory ``q`` and
+    rate ``u`` carry no direct noise, so their spread is plotted too but is
+    typically negligible). The deterministic single-path layout is unchanged.
     """
     import os
     import torch
@@ -836,9 +885,14 @@ def plot_best_policy_same_axes(
         )
         trajectories.append(tr_bvp)
 
-    # Learned best policy.
+    # Learned best policy. In stochastic mode roll a Monte-Carlo bundle so
+    # the panels can show mean +/- std bands; otherwise a single path.
+    stochastic = bool(getattr(prob, "has_diffusion", lambda: False)()) and int(n_paths) > 1
     roller = JFBPolicyRollout(prob, trainer.policy)
-    tr_policy = roller.solve(z0_one)
+    if stochastic:
+        tr_policy = roller.solve(z0_one, n_paths=int(n_paths), noise_seed=noise_seed)
+    else:
+        tr_policy = roller.solve(z0_one)
 
     tr_policy = _dc_replace(
         tr_policy,
@@ -882,9 +936,22 @@ def plot_best_policy_same_axes(
         lw = style.get("lw", 2.0)
         alpha = style.get("alpha", 0.85)
 
-        q = z[:, :n]
-        S = z[:, n:2*n]
-        X = z[:, 2*n] if z.shape[1] >= 2*n + 1 else None
+        # Stochastic bundles arrive as (P, N, dim) / (P, N-1, ctrl). Collapse
+        # the path axis to a mean trajectory plus a std envelope for the band.
+        if z.ndim == 3:
+            z_mean = z.mean(axis=0)
+            z_std = z.std(axis=0)
+        else:
+            z_mean = z
+            z_std = None
+        if u is not None and u.ndim == 3:
+            u_mean = u.mean(axis=0)
+        else:
+            u_mean = u
+
+        q = z_mean[:, :n]
+        S = z_mean[:, n:2*n]
+        X = z_mean[:, 2*n] if z_mean.shape[1] >= 2*n + 1 else None
 
         for i in range(n):
             color_i = asset_colors[i % len(asset_colors)]
@@ -908,11 +975,18 @@ def plot_best_policy_same_axes(
                 linewidth=lw,
                 alpha=alpha,
             )
+            # Price band: mean +/- 1 std across Brownian paths.
+            if z_std is not None:
+                S_lo = S[:, i] - z_std[:, n + i]
+                S_hi = S[:, i] + z_std[:, n + i]
+                ax_S.fill_between(
+                    t, S_lo, S_hi, color=color_i, alpha=0.18, linewidth=0,
+                )
 
-            if u is not None:
+            if u_mean is not None:
                 ax_u.plot(
                     t[:-1],
-                    u[:, i],
+                    u_mean[:, i],
                     color=color_i,
                     linestyle=method_ls,
                     linewidth=lw,
@@ -931,6 +1005,13 @@ def plot_best_policy_same_axes(
                 alpha=alpha,
                 label=tr.label,
             )
+            # Cash band from the same Brownian paths.
+            if z_std is not None and z_std.shape[1] >= 2 * n + 1:
+                X_lo = X - z_std[:, 2 * n]
+                X_hi = X + z_std[:, 2 * n]
+                ax_X.fill_between(
+                    t, X_lo, X_hi, color=cash_color, alpha=0.18, linewidth=0,
+                )
 
     ax_q.set_title("Inventory $q_i(t)$")
     ax_q.set_xlabel("t")
@@ -959,7 +1040,10 @@ def plot_best_policy_same_axes(
     ax_X.grid(True, alpha=0.3)
     ax_X.legend(fontsize=8)
 
-    fig.suptitle(f"Best policy rollout, n_assets={n}, gamma={prob.gamma:g}")
+    _suptitle = f"Best policy rollout, n_assets={n}, gamma={prob.gamma:g}"
+    if stochastic:
+        _suptitle += f"  |  stochastic: {int(n_paths)} MC paths, mean +/- 1 std band"
+    fig.suptitle(_suptitle)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
 
     if save_path is None:
@@ -1008,6 +1092,15 @@ def main() -> None:
         "Backprop regime: "
         + ("JFB + full-AD (overlay)" if args.full_ad else "JFB only")
     )
+    if bool(getattr(prob, "has_diffusion", lambda: False)()):
+        print(
+            "Dynamics: STOCHASTIC  "
+            f"sigma_S={tuple(float(s) for s in args.sigma_S)}  "
+            f"n_hutch={args.n_hutch}  n_paths={args.n_paths}  "
+            f"noise_seed={getattr(prob, 'noise_seed', None) or args.noise_seed or args.seed}"
+        )
+    else:
+        print("Dynamics: DETERMINISTIC (sigma_S = 0)")
 
     # Always train (or load) the analytic-JFB policy.  When --full-ad is set
     # we also train a second policy through full autograd.  The user's
@@ -1113,6 +1206,12 @@ def main() -> None:
         label="JFB best policy",
         include_bvp=FALSE,
         path_index=0,
+        n_paths=getattr(args, "n_paths", 1),
+        noise_seed=(
+            getattr(args, "noise_seed", None)
+            if getattr(args, "noise_seed", None) is not None
+            else (None if getattr(args, "no_seed", False) else getattr(args, "seed", None))
+        ),
     )
 
     if args.diagnostics:

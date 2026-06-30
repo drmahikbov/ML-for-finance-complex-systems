@@ -64,9 +64,30 @@ def run_liquidation_jfb(
     lr: float = 1e-3,
     plot_frequency: int = 10,
     device: str = "cpu",
+    sigma_S=0.0,
+    n_hutch: int = 1,
+    n_paths_per_ic: int = 1,
+    noise_seed=None,
 ) -> OptimalControlTrainer:
     """Train a JFB liquidation policy and return the trainer (so the caller
-    can read ``trainer.run_io`` if it needs to look up artifact paths)."""
+    can read ``trainer.run_io`` if it needs to look up artifact paths).
+
+    Stochastic extension
+    --------------------
+    Set ``sigma_S > 0`` to switch the price dynamics from the deterministic
+    ``dS = -kappa u dt`` to the SDE ``dS = -kappa u dt + sigma_S dW``. When
+    enabled:
+
+    * the forward rollout becomes Euler-Maruyama;
+    * the HJB residual diagnostic picks up the Hutchinson estimate of
+      ``1/2 Tr(Sigma_S Hess phi)`` (``n_hutch`` probe vectors);
+    * ``n_paths_per_ic`` replicates each initial condition so the training
+      objective is an explicit Monte-Carlo expectation over Brownian paths;
+    * ``noise_seed`` makes the Brownian increments reproducible.
+
+    With ``sigma_S = 0`` (the default) every code path collapses to the
+    original deterministic behaviour.
+    """
 
     print()
     print("####################################################################")
@@ -94,8 +115,14 @@ def run_liquidation_jfb(
         # ``[1.0, 1.0]`` to penalise HJB / adjoint residuals during training.
         alphaHJB=[0.0, 0.0],
         alphaadj=[0.0, 0.0],
+        # Stochastic price extension (0 => deterministic, original behaviour).
+        sigma_S=sigma_S,
+        n_hutch=n_hutch,
+        noise_seed=noise_seed,
     )
     lp.track_all_fp_iters = full_AD
+    # Monte-Carlo paths per initial condition for the (stochastic) objective.
+    lp.n_paths_per_ic = int(n_paths_per_ic)
 
     # Reduced LiquidationPortfolioOC has ``∂²H'/∂u² = 2η`` (problem constant
     # per asset). Per asset i the FP iteration ``u_i ← u_i − α (∂_u H')_i``
@@ -153,6 +180,77 @@ def run_liquidation_jfb(
     return trainer
 
 
+def run_liquidation_jfb_stochastic(
+    *,
+    epochs: int = 30,
+    lr: float = 1e-3,
+    plot_frequency: int = 10,
+    device: str = "cpu",
+    sigma_S=0.05,
+    n_hutch: int = 4,
+    n_paths_per_ic: int = 8,
+    noise_seed: int = 7,
+    n_band_paths: int = 256,
+):
+    """Train a *stochastic* AC liquidation policy and draw an MC band rollout.
+
+    Demonstrates the full stochastic pipeline end to end: Euler-Maruyama
+    rollout, Hutchinson HJB-trace diagnostic, and a Monte-Carlo objective,
+    followed by a mean +/- std band over ``n_band_paths`` simulated paths.
+    """
+    import matplotlib.pyplot as plt
+    from benchmarking import monte_carlo_policy_band
+
+    trainer = run_liquidation_jfb(
+        full_AD=False, epochs=epochs, lr=lr, plot_frequency=plot_frequency,
+        device=device, sigma_S=sigma_S, n_hutch=n_hutch,
+        n_paths_per_ic=n_paths_per_ic, noise_seed=noise_seed,
+    )
+
+    prob = trainer.oc_problem
+    policy = trainer.policy
+    z0 = prob.sample_initial_condition()[0]   # single IC -> MC band over paths
+
+    band = monte_carlo_policy_band(
+        prob, policy, z0, n_paths=n_band_paths, seed=noise_seed,
+        label="JFB MC band",
+    )
+    print(
+        f"[stochastic demo] MC band: n_paths={band.meta.get('n_paths')}, "
+        f"z.shape={band.z.shape} (mean +/- std over paths)"
+    )
+
+    # Self-contained mean +/- 1 std band figure for asset 0 (inventory q_0 and
+    # price S_0). ``band.z`` has shape (n_paths, nt+1, state_dim[+cash]).
+    try:
+        t = band.t
+        n = prob.n_assets
+        z = band.z                                  # (P, nt+1, ...)
+        q0 = z[:, :, 0]                             # inventory of asset 0
+        S0 = z[:, :, n]                            # price of asset 0
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+        for ax, data, name in ((axes[0], q0, "q_0 (inventory)"),
+                               (axes[1], S0, "S_0 (price)")):
+            mu = data.mean(axis=0)
+            sd = data.std(axis=0)
+            ax.plot(t, mu, color="#4393c3", lw=2.0, label="mean")
+            ax.fill_between(t, mu - sd, mu + sd, color="#4393c3", alpha=0.25,
+                            label="+/- 1 std")
+            ax.set_title(f"Stochastic AC rollout: {name}")
+            ax.set_xlabel("t")
+            ax.legend()
+        fig.tight_layout()
+        save_path = os.path.join(trainer.run_io.benchmark_dir,
+                                 "stochastic_mc_band.png")
+        fig.savefig(save_path, dpi=120)
+        plt.close(fig)
+        print(f"[stochastic demo] wrote MC band figure -> {save_path}")
+    except Exception as exc:   # plotting is best-effort in the demo
+        print(f"[stochastic demo] band plot skipped: {exc!r}")
+
+    return trainer
+
+
 def main():
     seed = 420
     torch.manual_seed(seed)
@@ -160,8 +258,10 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     run_liquidation_jfb(full_AD=False, epochs=30, lr=1e-3,
                         plot_frequency=10, device=device)
-    
-    
+
+    # Stochastic extension demo (price volatility on S). Comment out to skip.
+    run_liquidation_jfb_stochastic(epochs=30, lr=1e-3, plot_frequency=10,
+                                   device=device)
 
 
 if __name__ == "__main__":

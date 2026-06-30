@@ -794,10 +794,31 @@ class JFBPolicyRollout(ReferenceSolver):
                 f"z0 has {z0_np.shape[0]} components but prob.state_dim={prob.state_dim}"
             )
 
-        z0_t = torch.as_tensor(z0_np, dtype=torch.float32, device=device).unsqueeze(0)
+        # Number of Monte-Carlo paths. >1 only makes sense for a stochastic
+        # problem; for deterministic dynamics every path is identical so we
+        # keep the legacy single-path behaviour.
+        n_paths = int(kwargs.get("n_paths", 1))
+        has_diff = bool(getattr(prob, "has_diffusion", lambda: False)())
+        if not has_diff:
+            n_paths = 1
+        n_paths = max(n_paths, 1)
 
-        z_traj = torch.zeros(1, prob.state_dim, nt + 1, device=device)
-        u_traj = torch.zeros(1, prob.control_dim, nt, device=device)
+        # Optional seedable generator for reproducible Brownian increments.
+        seed = kwargs.get("noise_seed", None)
+        gen = None
+        if seed is not None:
+            gen = torch.Generator(device=device)
+            gen.manual_seed(int(seed))
+        else:
+            gen = getattr(prob, "noise_generator", None)
+
+        # Batch the paths along dim 0: z has shape (P, state_dim).
+        P = n_paths
+        z0_t = torch.as_tensor(z0_np, dtype=torch.float32, device=device).unsqueeze(0)
+        z0_t = z0_t.expand(P, -1).contiguous()
+
+        z_traj = torch.zeros(P, prob.state_dim, nt + 1, device=device)
+        u_traj = torch.zeros(P, prob.control_dim, nt, device=device)
         z_traj[:, :, 0] = z0_t
 
         # Detect a cash observer (post-reduction LiquidationPortfolioOC) and
@@ -805,16 +826,18 @@ class JFBPolicyRollout(ReferenceSolver):
         # expose `compute_cash_flow` (e.g. multi-bicycle).
         cash_fn = getattr(prob, "compute_cash_flow", None)
         if callable(cash_fn):
-            x_traj = torch.zeros(1, 1, nt + 1, device=device)
+            x_traj = torch.zeros(P, 1, nt + 1, device=device)
             x_traj[:, :, 0] = float(getattr(prob, "X0", 0.0))
         else:
             x_traj = None
+
+        diff_incr = getattr(prob, "diffusion_increment", None)
 
         z = z0_t.clone()
         ti = t0
         with torch.no_grad():
             for i in range(nt):
-                u = self.policy(z, float(ti)).view(1, prob.control_dim)
+                u = self.policy(z, float(ti)).view(P, prob.control_dim)
                 u_traj[:, :, i] = u
                 if x_traj is not None:
                     # Read S from the *current* (pre-update) state, matching
@@ -823,22 +846,33 @@ class JFBPolicyRollout(ReferenceSolver):
                         x_traj[:, :, i] + dt * cash_fn(float(ti), z, u)
                     )
                 z = z + dt * prob.compute_f(float(ti), z, u)
+                # Euler-Maruyama diffusion term (zero for deterministic probs).
+                if has_diff and callable(diff_incr):
+                    z = z + diff_incr(float(ti), z, u, dt, generator=gen)
                 z_traj[:, :, i + 1] = z
                 ti += dt
 
         t_jfb = np.linspace(t0, T, nt + 1)
-        z_np = z_traj[0].cpu().numpy().T       # (nt+1, state_dim)
-        u_np = u_traj[0].cpu().numpy().T       # (nt,   control_dim)
 
-        if x_traj is not None:
-            x_np = x_traj[0, 0].cpu().numpy()  # (nt+1,)
-            # Pack the observer cash at column `state_dim` so the plotter
-            # extractor at index 2*n_assets keeps working unchanged.
-            z_np = np.concatenate([z_np, x_np[:, None]], axis=1)
+        if P == 1:
+            # Legacy deterministic 2D Trajectory contract.
+            z_np = z_traj[0].cpu().numpy().T       # (nt+1, state_dim)
+            u_np = u_traj[0].cpu().numpy().T       # (nt,   control_dim)
+            if x_traj is not None:
+                x_np = x_traj[0, 0].cpu().numpy()  # (nt+1,)
+                z_np = np.concatenate([z_np, x_np[:, None]], axis=1)
+        else:
+            # Stochastic 3D Trajectory: (n_paths, nt+1, state_dim[+1]).
+            z_np = z_traj.permute(0, 2, 1).cpu().numpy()   # (P, nt+1, state_dim)
+            u_np = u_traj.permute(0, 2, 1).cpu().numpy()   # (P, nt, control_dim)
+            if x_traj is not None:
+                x_np = x_traj.permute(0, 2, 1).cpu().numpy()   # (P, nt+1, 1)
+                z_np = np.concatenate([z_np, x_np], axis=2)
 
         meta = {
             "solver": "JFBPolicyRollout",
             "z0": z0_np.copy(), "nt": nt,
+            "n_paths": P,
         }
         if x_traj is not None:
             meta["has_cash_observer"] = True
@@ -852,3 +886,47 @@ class JFBPolicyRollout(ReferenceSolver):
             style=dict(_DEFAULT_JFB_STYLE),
             meta=meta,
         )
+
+
+# =============================================================================
+# Monte-Carlo reference band (stochastic baseline)
+# =============================================================================
+
+_DEFAULT_MC_STYLE = {"color": "#4393c3", "lw": 2.0, "alpha": 0.9}
+
+
+def monte_carlo_policy_band(
+    prob: Any,
+    policy: Any,
+    z0: ArrayLike,
+    n_paths: int = 256,
+    seed: "int | None" = 0,
+    label: str = "MC band",
+) -> Trajectory:
+    """Roll a feedback ``policy`` over ``n_paths`` Euler-Maruyama paths.
+
+    Returns a *stochastic* (3D) :class:`Trajectory` (shape
+    ``(n_paths, nt+1, state_dim[+1])``) suitable for the ``plot_type="band"``
+    extractors in :mod:`benchmarking.plotter` (mean +/- 1 std across paths).
+
+    This is the stochastic analogue of a deterministic reference: instead of
+    a single "truth" path it provides the Monte-Carlo distribution of the
+    closed-loop dynamics under ``policy``. Use the trained policy to inspect
+    its own dispersion, or pass an oracle / closed-form control wrapped as a
+    ``(z, t) -> u`` callable for a certainty-equivalent baseline.
+
+    For a deterministic problem (``prob.has_diffusion() is False``) every path
+    is identical, so this collapses to a single-path rollout.
+    """
+    roller = JFBPolicyRollout(prob, policy)
+    traj = roller.solve(z0, n_paths=int(n_paths), noise_seed=seed)
+    # Re-label / restyle for the MC baseline without mutating the frozen
+    # dataclass in place.
+    return Trajectory(
+        t=traj.t,
+        z=traj.z,
+        u=traj.u,
+        label=label,
+        style=dict(_DEFAULT_MC_STYLE),
+        meta={**traj.meta, "solver": "monte_carlo_policy_band"},
+    )

@@ -63,6 +63,7 @@ def diagnostic_rollout(
     z0: torch.Tensor,
     label: str = "JFB diag",
     record_trace_at_t0: bool = True,
+    seed: "int | None" = None,
 ) -> Trajectory:
     """Roll out the policy and harvest inner-solver diagnostics.
 
@@ -83,6 +84,14 @@ def diagnostic_rollout(
     record_trace_at_t0
         If ``True`` the very first inner-FP call records its per-iteration
         residual trace, exposed via ``meta["fp_trace_t0"]``.
+    seed
+        Optional seed for a dedicated ``torch.Generator`` so the
+        Euler-Maruyama Brownian increments are reproducible. Only relevant
+        when ``prob.has_diffusion()`` is ``True``; ignored otherwise. This
+        routine always returns a single representative sample path (the
+        per-step inner-solver diagnostics are path-specific). Use
+        :class:`benchmarking.solvers.JFBPolicyRollout` with ``n_paths > 1``
+        for mean +/- std band rollouts.
 
     Returns
     -------
@@ -126,6 +135,15 @@ def diagnostic_rollout(
     with torch.no_grad():
         p_traj[0] = policy.p_net(t0, z).detach().cpu().numpy().reshape(-1)
 
+    # Euler-Maruyama support: reproducible Brownian increments when stochastic.
+    has_diff = bool(getattr(prob, "has_diffusion", lambda: False)())
+    diff_incr = getattr(prob, "diffusion_increment", None)
+    if seed is not None:
+        gen = torch.Generator(device=device)
+        gen.manual_seed(int(seed))
+    else:
+        gen = getattr(prob, "noise_generator", None)
+
     was_eval = not policy.training
     policy.eval()
     try:
@@ -151,6 +169,9 @@ def diagnostic_rollout(
             u_traj[i] = u.detach().cpu().numpy().reshape(-1)
             with torch.no_grad():
                 z = z + dt * prob.compute_f(float(ti), z, u)
+                # Euler-Maruyama diffusion term (zero for deterministic probs).
+                if has_diff and callable(diff_incr):
+                    z = z + diff_incr(float(ti), z, u, dt, generator=gen)
             z_traj[i + 1] = z.detach().cpu().numpy().reshape(-1)
 
             with torch.no_grad():

@@ -50,6 +50,26 @@ class ImplicitOC(ABC):
         # Gradient tracking of fixed point iterations
         self.track_all_fp_iters = track_all_fp_iters
 
+        # ------------------------------------------------------------------
+        # Stochastic dynamics (state SDE) — deterministic by default.
+        # ------------------------------------------------------------------
+        # Number of independent Brownian motions driving the state. 0 means
+        # the dynamics are a pure ODE (every legacy problem keeps this).
+        # Subclasses with a diffusion term set this to a positive integer
+        # and override ``compute_sigma`` / ``has_diffusion``.
+        self.n_brownian = 0
+        # Default number of Hutchinson probe vectors for the trace-of-Hessian
+        # estimator in ``compute_trace_sigma_hess_phi``.
+        self.n_hutch = 1
+        # Monte-Carlo paths per initial condition used by ``compute_loss``.
+        # 1 keeps the deterministic behaviour (and means MC averaging happens
+        # across the batch / epochs). >1 tiles each z0 row so the objective is
+        # an explicit expectation over independent Brownian paths per IC.
+        self.n_paths_per_ic = 1
+        # Subclasses with stochastic dynamics may set a dedicated RNG here;
+        # the base class leaves it unset (``getattr(..., None)``).
+        self.noise_generator = None
+
     @abstractmethod
     def compute_lagrangian(
         self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
@@ -241,6 +261,179 @@ class ImplicitOC(ABC):
         H_val = L_val + inner_product
         
         return H_val
+
+    # ------------------------------------------------------------------
+    # Stochastic dynamics: diffusion + second-order (trace) generator
+    # ------------------------------------------------------------------
+    # The default implementations below make every existing (deterministic)
+    # problem behave exactly as before: ``has_diffusion()`` is ``False`` and
+    # ``compute_sigma`` returns zeros. A subclass models a state SDE
+    #
+    #     dz = f(t, z, u) dt + sigma(t, z, u) dW,   W in R^{n_brownian}
+    #
+    # by setting ``self.n_brownian`` and overriding ``compute_sigma`` (and,
+    # if the diffusion can be switched off at runtime, ``has_diffusion``).
+    def has_diffusion(self) -> bool:
+        """Return ``True`` iff the state dynamics carry a diffusion term.
+
+        Default ``False`` so all deterministic problems and every integrator
+        guarded by this flag stay byte-for-byte unchanged.
+        """
+        return False
+
+    def compute_sigma(
+        self, t: TimeLike, z: torch.Tensor, u: torch.Tensor
+    ) -> torch.Tensor:
+        """Diffusion matrix ``sigma(t, z, u)`` of the state SDE.
+
+        Shape contract ``(batch, state_dim, n_brownian)``. The default is an
+        all-zeros tensor (no noise). Subclasses with stochastic dynamics
+        override this; for *additive* (control-independent) noise the ``u``
+        argument is ignored.
+        """
+        batch = z.shape[0]
+        n_bm = max(int(self.n_brownian), 1)
+        return torch.zeros(batch, self.state_dim, n_bm, device=z.device, dtype=z.dtype)
+
+    def diffusion_increment(
+        self,
+        t: TimeLike,
+        z: torch.Tensor,
+        u: torch.Tensor,
+        dt: float,
+        generator: torch.Generator | None = None,
+    ) -> torch.Tensor:
+        """Euler-Maruyama state increment ``sqrt(dt) * sigma(t,z,u) dW``.
+
+        Returns a ``(batch, state_dim)`` tensor of zeros when the problem is
+        deterministic, so callers can unconditionally add it to the Euler
+        drift step ``z + dt f``. ``dW`` is a standard Gaussian in
+        ``R^{n_brownian}`` scaled by ``sqrt(dt)``.
+
+        The increment is intentionally detached from the autograd graph: the
+        Brownian shock is exogenous data, not a function of the parameters,
+        which keeps the JFB Term-I gradient structure intact (additive noise
+        is a constant offset per step).
+        """
+        if not self.has_diffusion():
+            return torch.zeros_like(z)
+
+        batch = z.shape[0]
+        n_bm = max(int(self.n_brownian), 1)
+        with torch.no_grad():
+            sigma = self.compute_sigma(t, z, u)            # (B, state_dim, n_bm)
+            dW = torch.randn(
+                batch, n_bm, device=z.device, dtype=z.dtype, generator=generator
+            ) * float(dt) ** 0.5
+            incr = torch.bmm(sigma, dW.unsqueeze(-1)).squeeze(-1)   # (B, state_dim)
+        return incr
+
+    def compute_trace_sigma_hess_phi(
+        self,
+        t: TimeLike,
+        z: torch.Tensor,
+        p_net,
+        u: torch.Tensor | None = None,
+        n_hutch: int | None = None,
+        generator: torch.Generator | None = None,
+        create_graph: bool = True,
+    ) -> torch.Tensor:
+        r"""Hutchinson estimate of ``Tr( Sigma * Hess_zz phi )``.
+
+        With ``Sigma = sigma sigma^T`` and ``H = nabla^2_{zz} phi`` (both
+        symmetric), use the variance-reduced symmetric identity
+
+            Tr(Sigma H) = Tr(sigma^T H sigma) = E_v[ (sigma v)^T H (sigma v) ],
+
+        with ``v`` a Rademacher vector in ``R^{n_brownian}``. Each probe costs
+        one Hessian-vector product, obtained by differentiating
+        ``grad_z phi`` (which is itself one backward pass through ``p_net``).
+
+        Args
+        ----
+        z : (batch, state_dim) tensor. Must allow autograd w.r.t. ``z``;
+            this routine internally re-attaches a leaf copy so callers do not
+            have to.
+        p_net : value-function network exposing ``getPhi(t, z) -> (batch, 1)``.
+        n_hutch : number of probe vectors (default ``self.n_hutch``).
+        generator : optional ``torch.Generator`` for reproducible probes.
+        create_graph : keep the graph so the estimate is differentiable in
+            the network parameters (needed when used inside a training loss).
+
+        Returns
+        -------
+        (batch,) tensor: the (unbiased) estimate of ``Tr(Sigma H)``.
+        """
+        if not self.has_diffusion():
+            return torch.zeros(z.shape[0], device=z.device, dtype=z.dtype)
+
+        if n_hutch is None:
+            n_hutch = int(self.n_hutch)
+
+        batch = z.shape[0]
+        # Work on a leaf that requires grad so we can take HVPs even if the
+        # incoming ``z`` is detached (e.g. JFB stop-gradient state).
+        z_leaf = z.detach().clone().requires_grad_(True)
+
+        # sigma(t, z, u): (B, state_dim, n_brownian)
+        if u is None:
+            u = torch.zeros(batch, self.control_dim, device=z.device, dtype=z.dtype)
+        sigma = self.compute_sigma(t, z_leaf, u)
+
+        # grad_z phi: (B, state_dim), graph retained for the HVP / params.
+        phi = p_net.getPhi(t, z_leaf)                      # (B, 1)
+        grad_phi = torch.autograd.grad(
+            phi.sum(), z_leaf, create_graph=True, retain_graph=True
+        )[0]                                               # (B, state_dim)
+
+        trace_est = torch.zeros(batch, device=z.device, dtype=z.dtype)
+        for _ in range(n_hutch):
+            # Rademacher probe in Brownian space, mapped to state space.
+            v = torch.randint(
+                0, 2, (batch, max(int(self.n_brownian), 1)),
+                device=z.device, generator=generator, dtype=z.dtype,
+            ) * 2.0 - 1.0                                  # (B, n_brownian)
+            w = torch.bmm(sigma, v.unsqueeze(-1)).squeeze(-1)   # (B, state_dim)
+
+            # HVP: H w = grad_z( (grad_phi . w) ).
+            is_last = create_graph
+            Hw = torch.autograd.grad(
+                (grad_phi * w.detach()).sum(),
+                z_leaf,
+                create_graph=create_graph,
+                retain_graph=True,
+            )[0]                                           # (B, state_dim)
+            trace_est = trace_est + (Hw * w).sum(dim=1)
+
+        trace_est = trace_est / float(n_hutch)
+        return trace_est
+
+    def compute_general_H_stoch(
+        self,
+        t: TimeLike,
+        z: torch.Tensor,
+        u: torch.Tensor,
+        p: torch.Tensor,
+        p_net=None,
+        n_hutch: int | None = None,
+        generator: torch.Generator | None = None,
+        create_graph: bool = True,
+    ) -> torch.Tensor:
+        """Second-order Hamiltonian ``H = L + p^T f + 0.5 Tr(Sigma Hess phi)``.
+
+        Falls back exactly to :meth:`compute_general_H` when the problem is
+        deterministic or ``p_net`` is not supplied (so the diffusion trace
+        cannot be evaluated). ``p`` is used for the first-order ``p^T f``
+        term; the trace term needs the full value network ``p_net``.
+        """
+        H_det = self.compute_general_H(t, z, u, p)
+        if (not self.has_diffusion()) or (p_net is None):
+            return H_det
+        trace = self.compute_trace_sigma_hess_phi(
+            t, z, p_net, u=u, n_hutch=n_hutch,
+            generator=generator, create_graph=create_graph,
+        )
+        return H_det + 0.5 * trace
     
     def compute_grad_H_u(
         self, t: TimeLike, z: torch.Tensor, u: torch.Tensor, p: torch.Tensor
@@ -351,6 +544,24 @@ class ImplicitOC(ABC):
             
         Returns:
             torch.Tensor: Adjoint variable of shape (batch_size, state_dim)
+
+        Stochastic dynamics note
+        ------------------------
+        Under *additive* (control- and state-independent) diffusion such as
+        the price noise in :class:`LiquidationPortfolioOC`
+        (``dS = -kappa u dt + sigma_S dW``), the costate satisfies the BSDE
+
+            dp = -( (d f / d z)^T p + grad_z L ) dt + q_t dW,     p(T) = grad_z G,
+
+        whose *drift* is identical to the deterministic adjoint ODE solved
+        here (the diffusion ``sigma_S`` does not depend on ``z`` or ``u``, so
+        it contributes no extra drift term). The additional martingale
+        integrand ``q_t`` only affects the path-wise (realised) costate, not
+        its conditional mean. Hence this routine still returns the correct
+        *conditional-mean* costate ``E[p_t | z_t]`` for the additive-noise
+        case and is used purely as a diagnostic. A full second-adjoint / BSDE
+        solver (needed when the diffusion depends on ``z`` or ``u``) is out of
+        scope for the current state-only additive extension.
         """
         batch_size, nt = z.shape[0], z.shape[2]
         p = torch.zeros(batch_size, self.state_dim, nt)
@@ -382,6 +593,22 @@ class ImplicitOC(ABC):
         Returns:
             tuple: (total_cost, running_cost, terminal_cost, cHJB, cHJBfin, cadj, cadjfin)
         """
+        # Monte-Carlo over Brownian paths: replicate each initial condition
+        # ``n_paths_per_ic`` times so the rolled-out objective is an explicit
+        # expectation over independent noise realisations per IC. The
+        # ``diffusion_increment`` draws independent shocks per row, so the tiled
+        # rows become independent paths. Deterministic problems (or
+        # ``n_paths_per_ic == 1``) are untouched. Only applies to the feedback
+        # (policy) rollout, not the ``jac_based`` / open-loop tensor paths.
+        n_paths_per_ic = int(getattr(self, "n_paths_per_ic", 1))
+        if (
+            n_paths_per_ic > 1
+            and not jac_based
+            and hasattr(u, "forward")
+            and self.has_diffusion()
+        ):
+            z0 = z0.repeat_interleave(n_paths_per_ic, dim=0)
+
         batch_size = z0.shape[0]
         running_cost = 0.0
         cHJB, cHJBfin = torch.tensor(0.0, device=z0.device, dtype=z0.dtype), torch.tensor(0.0, device=z0.device, dtype=z0.dtype)
@@ -429,7 +656,9 @@ class ImplicitOC(ABC):
                 assert self.nt == u.shape[2]
                 for i in range(self.nt):
                     current_u = u[:, :, i].view(batch_size, self.control_dim)
-                    z = z + self.h * self.compute_f(ti, z, current_u)
+                    z = z + self.h * self.compute_f(ti, z, current_u) \
+                        + self.diffusion_increment(ti, z, current_u, self.h,
+                                                   generator=getattr(self, "noise_generator", None))
                     running_cost = running_cost + self.h * self.compute_lagrangian(ti, z, current_u)
                     ti = ti + self.h
                 # Calculate terminal cost
@@ -441,7 +670,11 @@ class ImplicitOC(ABC):
 
                 for i in range(self.nt):
                     current_u = u(z, ti, track_all_fp_iters=self.track_all_fp_iters).view(batch_size, self.control_dim)
-                    z = z + self.h * self.compute_f(ti, z, current_u)
+                    # Euler-Maruyama drift + diffusion (zero increment when the
+                    # problem is deterministic, so JFB training is unchanged).
+                    z = z + self.h * self.compute_f(ti, z, current_u) \
+                        + self.diffusion_increment(ti, z, current_u, self.h,
+                                                   generator=getattr(self, "noise_generator", None))
                     running_cost = running_cost + self.h * self.compute_lagrangian(ti, z, current_u)
 
                     # Only compute HJB and adjoint for implicit control methods
@@ -451,7 +684,22 @@ class ImplicitOC(ABC):
                         if hasattr(u.p_net, "getPhi"):
                             # double check sign
                             #assert gradPhi[:,-1:].shape == self.compute_general_H(ti, z, current_u, gradPhi[:,:self.state_dim]).view(-1,1).shape
-                            cHJB = cHJB + self.h*torch.mean(torch.linalg.vector_norm(gradPhi[:,-1:] - self.compute_general_H(ti, z, current_u, gradPhi[:,:self.state_dim]).view(-1,1), ord=2, dim=1))
+                            # Stochastic HJB: the generalized Hamiltonian gains
+                            # the second-order term 1/2 Tr(Sigma Hess_zz phi),
+                            # estimated by Hutchinson HVP. For deterministic
+                            # problems ``compute_general_H_stoch`` reduces
+                            # exactly to ``compute_general_H``. The trace is
+                            # made differentiable only when it actually enters
+                            # the optimizer (alphaHJB[0] > 0), so the default
+                            # diagnostic mode (weight 0) stays cheap.
+                            _hjb_create_graph = bool(self.alphaHJB[0] > 0) and torch.is_grad_enabled()
+                            H_stoch = self.compute_general_H_stoch(
+                                ti, z, current_u, gradPhi[:, :self.state_dim],
+                                p_net=u.p_net, n_hutch=getattr(self, "n_hutch", 1),
+                                generator=getattr(self, "noise_generator", None),
+                                create_graph=_hjb_create_graph,
+                            )
+                            cHJB = cHJB + self.h*torch.mean(torch.linalg.vector_norm(gradPhi[:,-1:] - H_stoch.view(-1,1), ord=2, dim=1))
 
                         grad_H_u = self.compute_grad_H_u(ti, z, current_u, gradPhi[:,:self.state_dim])
                         max_norm_grad_H_u = torch.max(torch.linalg.vector_norm(grad_H_u, ord=2, dim=1)).item()
