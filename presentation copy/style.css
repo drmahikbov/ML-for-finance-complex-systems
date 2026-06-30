@@ -1,0 +1,433 @@
+/* Academic deck: light background, readable type, restrained motion */
+
+:root {
+  --slidev-theme-primary: #1a1a1a;
+  --slidev-code-background: #f4f4f5;
+}
+
+.slidev-layout {
+  color: #1a1a1a;
+  background: #fafafa;
+  letter-spacing: 0.01em;
+}
+
+.slidev-layout h1 {
+  font-weight: 600;
+  font-size: 1.85rem;
+  line-height: 1.2;
+  margin-bottom: 0.75rem;
+}
+
+.slidev-layout h2 {
+  font-weight: 600;
+  font-size: 1.35rem;
+  margin-bottom: 0.65rem;
+}
+
+.slidev-layout ul,
+.slidev-layout ol {
+  line-height: 1.45;
+  font-size: 1.05rem;
+}
+
+.slidev-layout li {
+  margin: 0.35em 0;
+}
+
+/* Larger display math */
+.slidev-layout .katex-display {
+  font-size: 1.12em;
+  margin: 0.85em 0;
+}
+
+/* Pull objective block tight under the “Objective” label */
+.slidev-layout p:has(+ .objective-math) {
+  margin-bottom: 0;
+}
+
+.slidev-layout .objective-math {
+  margin-top: -0.35rem;
+}
+
+.slidev-layout .objective-math p {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.slidev-layout .objective-math .katex-display {
+  margin-top: 0;
+  margin-bottom: 0.75em;
+}
+
+/* Slightly more breathing room around slides */
+.slidev-page {
+  padding: 2rem 2.5rem;
+}
+
+/* Continuous slide index (global-bottom.vue) — part 1 then part 2 */
+.deck-slide-number {
+  position: fixed;
+  top: 0.7rem;
+  right: 1.15rem;
+  z-index: 200;
+  font-size: 0.72rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  color: rgba(100, 116, 139, 0.45);
+  pointer-events: none;
+  user-select: none;
+  line-height: 1;
+}
+
+.print-slide-container .deck-slide-number {
+  position: absolute;
+  top: 0.55rem;
+  right: 0.9rem;
+  z-index: 20;
+}
+
+/* Disable flashy transitions globally */
+.slidev-vclick-target {
+  transition: opacity 0.15s ease;
+}
+
+/* Paper reference under title — slightly softened */
+.slidev-layout em.paper-ref {
+  display: block;
+  margin-top: 0.35rem;
+  max-width: 42rem;
+  line-height: 1.35;
+  font-size: 0.92em;
+  opacity: 0.78;
+  color: inherit;
+}
+
+/* OC training pipeline card (see components/PipelineBox.vue) */
+.slidev-layout .pipeline-box.pipeline-box--unified {
+  margin-top: 0.75rem;
+  width: 100%;
+  padding: 0.65rem 1rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.5rem;
+  background: #f1f5f9;
+  color: #334155;
+  text-align: center;
+  line-height: 1.45;
+  font-size: 0.9rem;
+}
+
+.slidev-layout .pipeline-box--unified .pipeline-box__equation .katex-display,
+.slidev-layout .pipeline-box--unified .pipeline-box__equation p {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  background: transparent !important;
+}
+
+.slidev-layout .pipeline-box--unified .pipeline-box__equation .katex {
+  font-size: 0.98em;
+}
+
+.slidev-layout .pipeline-box__title {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.72;
+  margin-bottom: 0.45rem;
+}
+
+/* Grouped display math (e.g. RLS recursion on part 2) — full opacity */
+.slidev-layout .math-box {
+  margin-top: 0.55rem;
+  padding: 0.55rem 1rem 0.6rem;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 0.45rem;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: rgba(241, 245, 249, 0.92);
+}
+
+.slidev-layout .math-box .math-box__title {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
+  color: #475569;
+}
+
+.slidev-layout .math-box .katex-display {
+  margin: 0.35rem 0 0 !important;
+}
+
+.slidev-layout .math-box.math-box--hard {
+  border-color: rgba(161, 98, 7, 0.45);
+  background: rgba(254, 243, 199, 0.95);
+  box-shadow: 0 1px 0 rgba(253, 230, 138, 0.9);
+}
+
+.slidev-layout .math-box.math-box--hard .math-box__title {
+  color: #92400e;
+  font-weight: 700;
+}
+
+/* Secondary restatement (e.g. differential form) — softened vs main slide body */
+.slidev-layout .equiv-box {
+  margin-top: 0.65rem;
+  padding: 0.55rem 1rem 0.6rem;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 0.45rem;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: rgba(241, 245, 249, 0.55);
+  opacity: 0.72;
+}
+
+.slidev-layout .equiv-box .equiv-box__title {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  opacity: 0.85;
+  margin-bottom: 0.35rem;
+  color: #475569;
+}
+
+/* §1.1 — emphasis callout around key PMP definition */
+.slidev-layout .important-box {
+  margin: 0.5rem 0 0.75rem;
+  padding: 0.55rem 1rem 0.65rem;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 0.45rem;
+  border: 2px solid rgba(185, 28, 28, 0.75);
+  background: rgba(254, 242, 242, 0.88);
+  box-shadow: 0 1px 0 rgba(254, 202, 202, 0.9);
+}
+
+.slidev-layout .important-box .important-box__label {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  margin-bottom: 0.38rem;
+  color: #b91c1c;
+}
+
+.slidev-layout .important-box .katex-display {
+  margin: 0.15rem 0 0 !important;
+}
+
+/* §1.1 PMP — tuck optimality block upward under preceding adjoint display */
+.slidev-layout p:has(+ p + .optimality-important) .katex-display {
+  margin-bottom: 0.25rem !important;
+}
+
+.slidev-layout p:has(+ .optimality-important) {
+  margin-top: -0.45rem !important;
+  margin-bottom: 0.2rem !important;
+}
+
+.slidev-layout .important-box.optimality-important {
+  margin-top: 0 !important;
+  margin-bottom: 0.65rem !important;
+}
+
+/* §1.3 — complexity comparison table snug under fixed-point grid */
+.slidev-layout .comparison-table-snug {
+  margin-top: -0.5rem !important;
+}
+
+.slidev-layout .comparison-table-snug table {
+  margin-top: 0;
+  margin-bottom: 0.35rem;
+}
+
+.slidev-layout .comparison-table-snug + p {
+  margin-top: 0.2rem !important;
+}
+.slidev-layout .equiv-box .katex-display {
+  margin: 0.35rem 0 0 !important;
+}
+
+/* BSDE display under stochastic equiv box — separate wrapper avoids Vue/KaTeX parse glitch */
+.slidev-layout .stoch-costate-equation {
+  margin-top: 0.35rem;
+}
+
+.slidev-layout .stoch-costate-equation .katex-display {
+  margin: 0.35rem 0 0 !important;
+}
+
+/* Full-opacity variant (e.g. §1.9 stochastic box with coloured diffusion) */
+.slidev-layout #stochastic-equiv-box.equiv-box {
+  opacity: 1;
+}
+
+.slidev-layout #stochastic-equiv-box.equiv-box .equiv-box__title {
+  opacity: 1;
+}
+
+/* §1.8 results grids — room for imported figures later */
+.slidev-layout .results-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem 0.95rem;
+  margin-top: 0.55rem;
+  width: 100%;
+  flex: 1;
+  align-content: start;
+}
+
+.slidev-layout .plot-slot {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  aspect-ratio: 4 / 3;
+  padding: 0.35rem 0.65rem;
+  border-radius: 0.42rem;
+  border: 1px dashed rgba(71, 85, 105, 0.45);
+  background: rgba(248, 250, 252, 0.9);
+  color: #64748b;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.slidev-layout .plot-slot__label {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.62rem;
+  opacity: 0.88;
+  margin-bottom: 0.2rem;
+  color: #475569;
+}
+
+.slidev-layout .plot-slot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 0.25rem;
+}
+
+/* Pseudocode algorithm box — #0f2841 ocean panel, #fac05e keywords */
+.slidev-layout pre.algo-box {
+  display: block;
+  margin: 0.9rem auto;
+  padding: 1rem 1.25rem;
+  max-width: 56rem;
+  background: #0f2841;
+  color: #d4e4f2;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0.5rem;
+  box-shadow: 0 2px 10px rgba(5, 20, 40, 0.45);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.slidev-layout pre.algo-box code {
+  background: transparent;
+  color: #d4e4f2;
+  font-family: inherit;
+  font-size: inherit;
+  padding: 0;
+}
+
+.slidev-layout pre.algo-box .algo-ln {
+  display: inline-block;
+  width: 2.25rem;
+  text-align: right;
+  color: rgba(212, 228, 242, 0.45);
+  user-select: none;
+  margin-right: 0.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.slidev-layout pre.algo-box .algo-kw {
+  color: #fac05e;
+  font-weight: 600;
+}
+
+.slidev-layout pre.algo-box .algo-math,
+.slidev-layout pre.algo-box .algo-id {
+  color: #7dd3fc;
+  font-weight: 500;
+}
+
+.slidev-layout pre.algo-box .algo-cm {
+  color: rgba(212, 228, 242, 0.55);
+  font-style: italic;
+}
+
+/* Hessian / stochastic adjunct line — stands out on dark panel */
+.slidev-layout pre.algo-box .algo-math-red {
+  color: #f87171;
+  font-weight: 500;
+}
+
+/* De-emphasise scaffolding lines (batch / bookkeeping) vs inner time-step loop */
+.slidev-layout pre.algo-box .algo-line-muted {
+  opacity: 0.72;
+}
+
+
+
+
+
+
+
+
+/* Hide built-in <Toc /> (slide outline) so it does not overlay slide content in play/presenter views.
+   Duplicated in global-bottom.vue + empty components/Toc.vue override.
+   Broad selectors: theme updates or nested DOM must not resurrect the panel. */
+   html .slidev-toc,
+   html .slidev-toc-list,
+   html ol.slidev-toc-list,
+   html .slidev-toc-item,
+   .slidev-layout .slidev-toc,
+   .slidev-page .slidev-toc,
+   #page-root .slidev-toc {
+     display: none !important;
+     visibility: hidden !important;
+     width: 0 !important;
+     height: 0 !important;
+     max-width: 0 !important;
+     max-height: 0 !important;
+     overflow: hidden !important;
+     margin: 0 !important;
+     padding: 0 !important;
+     pointer-events: none !important;
+     position: absolute !important;
+     left: -9999px !important;
+     clip: rect(0, 0, 0, 0) !important;
+   }
+   
+   /* Slidev Goto dialog (fixed top-right): slide title list + input — can overlap slides in some browsers / states. */
+   #slidev-goto-dialog {
+     display: none !important;
+     visibility: hidden !important;
+     pointer-events: none !important;
+     opacity: 0 !important;
+     width: 0 !important;
+     height: 0 !important;
+     overflow: hidden !important;
+     clip: rect(0, 0, 0, 0) !important;
+   }
+   
+   /* Reduce global top whitespace before slide titles. */
+   .slidev-layout,
+   .slidev-layout.cover,
+   .slidev-layout.section {
+     padding-top: 1rem !important;
+   }
+   

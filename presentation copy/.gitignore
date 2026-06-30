@@ -1,0 +1,8 @@
+# Dependencies — reinstall with `npm ci` or `npm install`
+node_modules/
+
+# Slidev / Vite build output
+dist/
+
+# OS
+.DS_Store
