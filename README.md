@@ -1,169 +1,150 @@
-# ML-for-finance-complex-systems
+# ML for Finance — Complex Systems
 
-Implicit-network policy training for finite-horizon optimal control problems
-(JFB / FullAD), built around a small set of single-purpose abstractions:
+Master's project code for training **implicit neural-network policies** on
+optimal-control problems in quantitative finance, using
+**Jacobian-Free Backpropagation (JFB)** and a comparison baseline
+**full autodiff (Full-AD)**.
 
-| Layer            | Path                                  | Owns                                              |
-| ---------------- | ------------------------------------- | ------------------------------------------------- |
-| Math contract    | `jfb-for-implicit-oc/core/ImplicitOC` | Abstract OC problem (dynamics, costs, IC sampler) |
-| Run identity     | `jfb-for-implicit-oc/core/run_io`     | `tag`, `run_id`, every artifact filename          |
-| Disk layout      | `jfb-for-implicit-oc/core/paths`      | `results/<ProblemClassName>/.../` directories     |
-| Training loop    | `jfb-for-implicit-oc/core/OptimalControlTrainer` | Save / reload / finalize, plotting dispatch |
-| Plotting service | `jfb-for-implicit-oc/benchmarking/`   | `Trajectory`, `Panel`, `BenchmarkPlotter`         |
-| Concrete problem | `jfb-for-implicit-oc/models/`         | Math, plus `panels()` + `to_trajectory()`         |
-| Runner          | `jfb-for-implicit-oc/examples/`       | Wiring only — *no* paths, *no* filenames          |
+The main result reproduced here is a **20-asset Almgren–Chriss portfolio
+liquidation** problem with **stochastic price dynamics**
+(`dS = −κ u dt + σ_S dW`), trained and evaluated end-to-end from this
+repository.
 
-## Setup
+## Acknowledgements
 
-Use the Python version pinned in `.python-version`, then:
+This project builds on the **Jacobian-Free Backpropagation** codebase
+from Gelphman, Verma, Yang, Osher, and Wu Fung (ICML / arXiv 2025–2026).
+See [ORIGINAL-AUTHORS.md](ORIGINAL-AUTHORS.md) for citation details and
+the upstream examples (quadcopter, multi-bicycle, consumption–savings).
+
+For architecture notes and how to add new problems, see [DEVELOPERS.md](DEVELOPERS.md).
+
+---
+
+## What you need
+
+| Requirement | Notes |
+|-------------|-------|
+| **Python 3.12** | Version pinned in `.python-version` |
+| **~4 GB disk** | Dependencies + generated plots/checkpoints |
+| **GPU (optional)** | Speeds up training; CPU works but is slower |
+| **Git** | To clone the repository |
+
+Estimated runtime for the reference simulation below:
+**several hours on CPU**, much faster with CUDA. The script trains **two**
+policies (JFB + Full-AD), **300 epochs** each.
+
+---
+
+## Installation
 
 ```bash
+git clone git@github.com:akatsukey/ML-for-finance-complex-systems.git
+cd ML-for-finance-complex-systems
+
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-A virtual environment is recommended.
+---
 
-## Running an existing model
-
-```bash
-cd jfb-for-implicit-oc
-python examples/example_liquidationportfolio.py
-```
-
-Every run deterministically writes the following bundle (timestamps differ
-per invocation, so re-running never overwrites):
+## Repository layout
 
 ```
-results/LiquidationPortfolioOC/
+ML-for-finance-complex-systems/
+├── README.md                      ← this file (reference simulation)
+├── ORIGINAL-AUTHORS.md            ← upstream ICML JFB code & citations
+├── DEVELOPERS.md                  ← architecture / add-new-model recipe
+├── requirements.txt
+├── jfb-for-implicit-oc/           ← all Python code lives here
+│   ├── models/LiquidationPortfolio.py
+│   ├── examples/explicit_ustar/plot_liquidation_jfb.py   ← main runner
+│   └── results/                   ← created at run time (git-ignored)
+│       └── LiquidationPortfolioOC/
+│           ├── training/          ← checkpoints, loss curves
+│           └── benchmark/         ← comparison & diagnostic figures
+└── presentation/                  ← Slidev slides (optional)
+```
+
+Training outputs are **not** committed to git. They appear under
+`jfb-for-implicit-oc/results/` after you run the script.
+
+---
+
+## What the reference simulation does
+
+The command at the end of this file runs
+`examples/explicit_ustar/plot_liquidation_jfb.py`, which:
+
+1. **Builds** a 20-asset liquidation problem with stochastic prices
+   (`σ_S = 0.02`), power-law trading costs (`γ = 1.9`), and cross-asset
+   inventory risk (`σ = 0.01414`).
+2. **Trains** an implicit JFB policy for 300 epochs
+   (`--tag FULL-STOCHASTIC-VS-DET-20-ASSETS`).
+3. **Trains** a second Full-AD policy for comparison (`--full-ad`).
+4. **Rolls out** the best JFB policy over **256 Monte-Carlo paths**
+   (`--n-paths 256`) and plots mean ± 1 std bands on prices and cash.
+5. **Writes diagnostic figures** (inner fixed-point residuals, costates, etc.).
+
+Key flags in this run:
+
+| Flag | Value | Meaning |
+|------|-------|---------|
+| `--n-assets 20` | 20 | Portfolio size |
+| `--sigma-S 0.02` | 0.02 | Price volatility (stochastic SDE) |
+| `--n-hutch 4` | 4 | Hutchinson probes for the stochastic HJB trace term |
+| `--n-paths 256` | 256 | MC paths for rollout bands |
+| `--full-ad` | on | Also train a Full-AD baseline |
+| `--no-aa` | on | Plain fixed-point inner solver (no Anderson acceleration) |
+| `--seed 42` / `--noise-seed 42` | 42 | Reproducible training and Brownian paths |
+
+---
+
+## Expected outputs
+
+After a successful run, look under:
+
+```
+jfb-for-implicit-oc/results/LiquidationPortfolioOC/
 ├── training/
-│   ├── best_policy_<tag>_<YYYYMMDD_HHMMSS>.pth
-│   ├── history_<tag>_<YYYYMMDD_HHMMSS>.csv
-│   ├── loss_curve_<tag>_<YYYYMMDD_HHMMSS>.png
-│   └── training-plots/
-│       └── rollout_<tag>_<YYYYMMDD_HHMMSS>_NNNN.png   # one per plot_frequency
-└── rollouts/
-    ├── policy_rollout_<tag>_<YYYYMMDD_HHMMSS>.png      # final rollout (best policy)
-    └── trajectory_<tag>_<YYYYMMDD_HHMMSS>.pth          # raw tensor for replay
+│   ├── best_policy_FULL-STOCHASTIC-VS-DET-20-ASSETS_<timestamp>.pth
+│   ├── best_policy_FULL-STOCHASTIC-VS-DET-20-ASSETS-fullAD_<timestamp>.pth
+│   ├── history_*.csv
+│   └── loss_curve_*.png
+└── benchmark/
+    ├── jfb_multiasset_rollout_n20_FULL-STOCHASTIC-VS-DET-20-ASSETS.png
+    ├── best_policy_same_axes_FULL-STOCHASTIC-VS-DET-20-ASSETS.png   ← main result figure
+    ├── jfb_diagnostics_FULL-STOCHASTIC-VS-DET-20-ASSETS.png
+    ├── jfb_diagnostics_FULL-STOCHASTIC-VS-DET-20-ASSETS-fullAD.png
+    └── training_curves_jfb_vs_ad_FULL-STOCHASTIC-VS-DET-20-ASSETS.png
 ```
 
-`<tag>` defaults to `"JFB"`; pass `tag="FullAD"` to `OptimalControlTrainer`
-to compare two strategies in the same `results/` tree without collisions.
+The script prints the absolute path of each figure as it is written.
+The most important plot for a quick check is
+`best_policy_same_axes_FULL-STOCHASTIC-VS-DET-20-ASSETS.png`
+(inventory, trading rates, prices with uncertainty bands, and cash).
 
-## Recipe: adding a new model
+---
 
-The recipe is **three files**, in order. The trainer + `RunIO` +
-`BenchmarkPlotter` combo guarantees the artifact bundle above appears
-without you writing any path code.
-
-> **Quick start:** copy `jfb-for-implicit-oc/examples/example_TEMPLATE.py`
-> as `examples/example_<myproblem>.py` and resolve the two `TODO` blocks
-> (one import, one constructor). Everything else — `sys.path` bootstrap,
-> network wiring, optimizer, trainer call — is already in place. Running
-> the unmodified template fails fast with a clear message pointing at the
-> exact lines to edit.
-
-### Checklist
-
-- [ ] **1. Define the problem in `jfb-for-implicit-oc/models/MyProblem.py`**
-  - [ ] `class MyProblemOC(ImplicitOC)` with `state_dim`, `control_dim`
-        passed to `super().__init__`
-  - [ ] Implement the math contract:
-    - [ ] `compute_lagrangian(t, z, u)`
-    - [ ] `compute_grad_lagrangian(t, z, u)`
-    - [ ] `compute_f(t, z, u)`
-    - [ ] `compute_grad_f_u(t, z, u)`
-    - [ ] `compute_grad_f_z(t, z, u)`
-    - [ ] `compute_G(z)`
-    - [ ] `compute_grad_G_z(z)`
-    - [ ] `sample_initial_condition()`
-    - [ ] `generate_trajectory(u, z0, nt, return_full_trajectory=False)`
-  - [ ] Plug into the plotting service (recommended):
-    - [ ] `panels(self) -> list[Panel]` — declarative subplot spec
-    - [ ] `to_trajectory(self, z_traj, policy=None, path_index=0, label=...) -> Trajectory`
-          — pack `(batch, state_dim, nt+1)` tensor into a `Trajectory`
-  - [ ] **No paths. No filenames. No matplotlib code.**
-  - [ ] If you can't supply `panels()` / `to_trajectory()` yet, the trainer
-        falls back to a legacy `plot_position_trajectories(z_traj, save_path=...)`
-        method (Quadcopter / MultiBicycle still work this way).
-
-- [ ] **2. Write the runner in `jfb-for-implicit-oc/examples/example_myproblem.py`**
-  - [ ] Copy `examples/example_TEMPLATE.py` as the starting point (it
-        already has the `sys.path` bootstrap, network wiring, optimizer,
-        scheduler, and `trainer.train(...)` call in place)
-  - [ ] Resolve **TODO[1]**: import your `MyProblemOC` from `models/`
-  - [ ] Resolve **TODO[2]**: instantiate `MyProblemOC(...)` with concrete
-        hyperparameters (dynamics, costs, IC distribution); delete the
-        `raise NotImplementedError(...)` immediately below it
-  - [ ] (Optional) override `Phi(3, 50, ...)` width, `u_min` / `u_max`,
-        optimizer, LR scheduler, `epochs`, `plot_frequency` if the
-        template defaults are wrong for your problem
-  - [ ] Sanity-check the constructor signature: the trainer is built with
-        `tag=...` only — no `save_name`, no output paths
-  - [ ] **No `os.path.join`. No `save_path=`. No `save_name=`.** The runner
-        is purely declarative.
-
-- [ ] **3. Run it**
-  - [ ] `cd jfb-for-implicit-oc && python examples/example_myproblem.py`
-  - [ ] Confirm the six-artifact bundle landed under
-        `results/MyProblemOC/training/` and `results/MyProblemOC/rollouts/`
-  - [ ] Open `loss_curve_*.png` and `policy_rollout_*.png` for sanity
-
-### Optional: comparison-vs-reference plots
-
-If your problem has an analytical or BVP reference solution and you want
-overlay figures, copy the liquidation comparison utilities:
-
-- [ ] **4. Add a `MyProblemBenchmark`** modeled on
-      `liquidation_benchmark.LiquidationBenchmark` (provides the reference
-      curves)
-- [ ] **5. Add `plot_myproblem_jfb.py`** modeled on `plot_liquidation_jfb.py`
-      — it writes to `results/<cls>/benchmark/`, distinct from the trainer's
-      `rollouts/` (the trainer plot shows the trained policy alone; the
-      benchmark plot overlays it against the reference)
-
-This step is purely additive. Pure JFB research with no reference solution
-does *not* need it — the example file already produces a final rollout.
-
-## Smell test: when SoC is being violated
-
-If you find yourself writing any of the following, stop — something is
-leaking out of `RunIO` and the right fix is to extend `RunIO`, not to
-bypass it:
-
-- `os.path.join(...)` inside a model or example
-- `save_path=...` literal inside a model or example
-- A `save_name` / `output_dir` argument added to `train()` or
-  `OptimalControlTrainer.__init__`
-- A new `*_dir` constant defined in a model or example file
-- `matplotlib.pyplot` imported inside a model class (panels go through
-  `BenchmarkPlotter`, not direct plt calls)
-
-## Where the legacy lives
-
-- `models/Quadcopter.py`, `models/MultiBicycle.py` keep their bespoke
-  `plot_position_trajectories(z_traj, save_path=...)` and ride the
-  trainer's fallback branch. Migrate them to `panels()` /
-  `to_trajectory()` opportunistically.
-- `liquidation_benchmark.py` and `plot_liquidation_jfb.py` sit at the
-  package top level (rather than in `examples/`) because they are
-  comparison-vs-reference utilities — distinct from the trainer's
-  trained-policy-alone rollouts.
-- `examples/example_liquidationportfolio.py`, `example_multibicycle.py`,
-  and `example_multi_quadcopter.py` are fully-instantiated examples, not
-  copy templates. Use `examples/example_TEMPLATE.py` for that purpose;
-  copying a fully-instantiated example also works but you'll have more
-  problem-specific wiring to delete.
-
-## Verifying the recipe
-
-After implementing a new model, the cheapest sanity check is:
+## Run the reference simulation
 
 ```bash
 cd jfb-for-implicit-oc
-python -m py_compile models/MyProblem.py examples/example_myproblem.py
-python examples/example_myproblem.py        # short run, e.g. num_epochs=3
-ls results/MyProblemOC/training results/MyProblemOC/rollouts
+
+python examples/explicit_ustar/plot_liquidation_jfb.py \
+  --n-assets 20 --t-final 2.0 --nt 100 \
+  --kappa 1e-5 --sigma 0.01414 --eta 0.5 \
+  --sigma-S 0.02 --n-hutch 4 --n-paths 256 --noise-seed 42 \
+  --gamma 1.9 --epsilon 1e-2 --alpha 30.0 \
+  --q0-min 3 --q0-max 8 --S0 2.0 --X0 0.0 \
+  --train-epochs 300 --batch-size 256 --lr 1e-3 \
+  --fp-max-iters 200 --fp-tol 1e-6 \
+  --phi-arch default --seed 42 \
+  --tag FULL-STOCHASTIC-VS-DET-20-ASSETS \
+  --no-aa --fp-alpha 0.9 --learned-costate-overlay off \
+  --full-ad
 ```
 
-You should see exactly six files in the two directories, with timestamps
-inside the run window.
+To use a GPU when available, add `--device cuda` to the command above.
